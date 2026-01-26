@@ -50,7 +50,6 @@ def render(
     ).unsqueeze(0)
     K_tensor = torch.tensor(K_raw, dtype=torch.float32, device=device).unsqueeze(0)
 
-    print(ply_path)
     means, colors, opacities, scales, quats = load_gs_ply(ply_path, device)
     with torch.no_grad():
         render_colors, _, _ = rasterization(
