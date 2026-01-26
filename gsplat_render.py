@@ -3,7 +3,7 @@ import numpy as np
 import json
 import cv2
 from gsplat.rendering import rasterization
-from gs_utils import load_gs_ply
+from utils.gs_utils import load_gs_ply
 
 
 def correct_camera_orientation(pano_location, camera_location, pano_rt, camera_rt):
@@ -50,6 +50,7 @@ def render(
     ).unsqueeze(0)
     K_tensor = torch.tensor(K_raw, dtype=torch.float32, device=device).unsqueeze(0)
 
+    print(ply_path)
     means, colors, opacities, scales, quats = load_gs_ply(ply_path, device)
     with torch.no_grad():
         render_colors, _, _ = rasterization(
@@ -71,25 +72,26 @@ def render(
     print(f"Image {W}x{H} saved to {output_path}")
 
 
-# Запуск
-ply_file = "/mnt/e/3D/experiments/output/WorldGen/splat.ply"
-pano_json_path = "/mnt/d/datasets/2D-3D-Semantics/area_1/pano/pose/camera_00d10d86db1e435081a837ced388375f_office_24_frame_equirectangular_domain_pose.json"
-camera_json_path = "/mnt/d/datasets/2D-3D-Semantics/area_1/data/pose/camera_00d10d86db1e435081a837ced388375f_office_24_frame_39_domain_pose.json"
+if __name__ == "__main__":
+    # Запуск
+    ply_file = "/mnt/e/3D/experiments/output/WorldGen/splat.ply"
+    pano_json_path = "/mnt/d/datasets/2D-3D-Semantics/area_1/pano/pose/camera_00d10d86db1e435081a837ced388375f_office_24_frame_equirectangular_domain_pose.json"
+    camera_json_path = "/mnt/d/datasets/2D-3D-Semantics/area_1/data/pose/camera_00d10d86db1e435081a837ced388375f_office_24_frame_39_domain_pose.json"
 
-dataset = "2D-3D-Semantic"
+    dataset = "2D-3D-Semantic"
 
-with open(pano_json_path, "r") as f:
-    pano_data = json.load(f)
+    with open(pano_json_path, "r") as f:
+        pano_data = json.load(f)
 
-with open(camera_json_path, "r") as f:
-    camera_data = json.load(f)
+    with open(camera_json_path, "r") as f:
+        camera_data = json.load(f)
 
-render(
-    ply_file,
-    pano_location=np.array(pano_data["camera_location"]),
-    camera_location=np.array(camera_data["camera_location"]),
-    pano_rt=np.array(pano_data["camera_rt_matrix"]),
-    camera_rt=np.array(camera_data["camera_rt_matrix"]),
-    camera_k=np.array(camera_data["camera_k_matrix"]),
-    output_path="final_gs_render39.png",
-)
+    render(
+        ply_file,
+        pano_location=np.array(pano_data["camera_location"]),
+        camera_location=np.array(camera_data["camera_location"]),
+        pano_rt=np.array(pano_data["camera_rt_matrix"]),
+        camera_rt=np.array(camera_data["camera_rt_matrix"]),
+        camera_k=np.array(camera_data["camera_k_matrix"]),
+        output_path="final_gs_render39.png",
+    )

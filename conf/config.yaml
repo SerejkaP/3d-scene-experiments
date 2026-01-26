@@ -1,0 +1,14 @@
+defaults:
+  - model: worldgen
+  - dataset: 2d3ds
+  - _self_
+
+generation_iters: 1
+save_path: /mnt/e/3D/experiments/output
+
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: outputs/${now:%Y-%m-%d_%H-%M-%S}
+    subdir: ${hydra.job.override_dirname}

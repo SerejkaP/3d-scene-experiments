@@ -1,0 +1,6 @@
+name: 2d3ds
+path: "/mnt/d/datasets/2D-3D-Semantics/area_1"
+params:
+  - pano_width: 4026
+  - pano_height: 2048
+  - tile_size: 1080
