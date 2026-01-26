@@ -1,0 +1,17 @@
+python -3.10 -m venv env
+.\env\Scripts\activate
+python.exe -m pip install --upgrade pip
+win:
+    pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+linux:
+    pip3 install torch torchvision
+python .\test_env.py
+
+# Для av=14.4.0
+sudo apt-get update
+sudo apt-get install libavformat-dev libavcodec-dev libavdevice-dev libavutil-dev libavfilter-dev libswscale-dev libswresample-dev
+
+pip install --upgrade pip setuptools wheel hatchling
+pip install -r requirements.txt --no-build-isolation
+
+Для WorldGen добавлено сохранение RGB-данных для просмотра в MeshLab
