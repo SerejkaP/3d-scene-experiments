@@ -38,8 +38,9 @@ def get_cubemap_views(center):
     return viewmats
 
 
-def render_cubemap(ply_path, center_pos, size, output_dir):
+def render_cubemap(ply_path, center_pos, size, output_path: str):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    output_dir = os.path.dirname(output_path)
     os.makedirs(output_dir, exist_ok=True)
 
     means, colors, opacities, scales, quats = load_gs_ply(ply_path, device)
@@ -72,14 +73,17 @@ def render_cubemap(ply_path, center_pos, size, output_dir):
             )
         img = (render_colors[0].cpu().numpy().clip(0, 1) * 255).astype(np.uint8)
         img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-        cv2.imwrite(os.path.join(output_dir, f"{name}.png"), img_bgr)
+        output_path_pieces = output_path.split(".")
+        view_name = output_path_pieces[0] + "_" + name + "." + output_path_pieces[-1]
+        print(view_name)
+        cv2.imwrite(view_name, img_bgr)
         results[name] = img_bgr
 
     print(f"All faces saved in '{output_dir}/'")
     return results
 
 
-def faces_to_pano(faces: dict, output_dir="output"):
+def faces_to_pano(faces: dict, output_path):
     faces_view = [
         faces["front"],
         faces["right"],
@@ -89,17 +93,18 @@ def faces_to_pano(faces: dict, output_dir="output"):
         faces["bottom"],
     ]
     equi_img = py360convert.c2e(faces_view, 2048, 4096, cube_format="list")
-    pano_path = os.path.join(output_dir, "pano", "pano_render.png")
-    cv2.imwrite(pano_path, equi_img)
+    cv2.imwrite(output_path, equi_img)
 
 
-def create_pano(ply_path, center_pos=[0, 0, 0], size=1024, output_dir="output"):
-    faces = render_cubemap(ply_path, center_pos=center_pos, size=size)
-    faces_to_pano(faces, output_dir)
+def render_pano(
+    ply_path, center_pos=[0, 0, 0], size=1024, output_path="pano_render.png"
+):
+    faces = render_cubemap(ply_path, center_pos, size, output_path)
+    faces_to_pano(faces, output_path)
 
 
 if __name__ == "__main__":
     ply_file = "/mnt/e/3D/experiments/output/WorldGen/splat.ply"
     cam_loc = [0, 0, 0]
 
-    create_pano(ply_file, center_pos=cam_loc, size=1024)
+    render_pano(ply_file, cam_loc, 1024, "output/pano_render.png")

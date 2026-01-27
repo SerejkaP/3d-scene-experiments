@@ -1,9 +1,10 @@
 import os
 import hydra
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 import numpy as np
 import json
 from gsplat_render import render_camera
+from gsplat_pano_render import render_pano
 from utils.worldgen_utils import worldgen_generate
 from utils.dataset_2d3ds_utils import pose_json_by_image_path
 from utils.metrics import compute_gt_metrics
@@ -68,6 +69,17 @@ def main(cfg: DictConfig):
                 cfg.model.name, current_pano_rgb_path, ply_render_path
             )
 
+            rendered_pano_path = os.path.join(cfg.save_path, f"{pano_name}_pano.png")
+            render_pano(
+                ply_render_path, [0, 0, 0], cfg.dataset.pano_width, rendered_pano_path
+            )
+
+            pano_psnr, pano_ssim = compute_gt_metrics(
+                current_pano_rgb_path, rendered_pano_path
+            )
+            print("PANO PSNR: ", pano_psnr)
+            print("PANO SSIM: ", pano_ssim)
+
             camera_poses = [
                 camera_json
                 for camera_json in os.listdir(data_pose)
@@ -104,9 +116,9 @@ def main(cfg: DictConfig):
             pano_json_path, pano_name = pose_json_by_image_path(
                 current_pano_rgb_name, pano_pose
             )
-    if cfg.dataset.name == "ob3d":
+    elif cfg.dataset.name == "ob3d":
         pass
-    if cfg.dataset.name == "structured3d":
+    elif cfg.dataset.name == "structured3d":
         pass
     else:
         raise Exception("Undefined dataset name!")
