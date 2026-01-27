@@ -3,7 +3,9 @@
 
 import cv2
 import numpy as np
+import torch
 from skimage.metrics import structural_similarity
+import lpips
 
 
 def psnr_compute(gt_image, render_image):
@@ -20,6 +22,25 @@ def ssim_compute(gt_image, render_image):
 
     score, _ = structural_similarity(gt_image_gray, render_image_gray, full=True)
     return score
+
+
+class LpipsMetric:
+    def __init__(self, device=None):
+        self.device = (
+            device
+            if device is not None
+            else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        )
+        self.loss_fn = lpips.LPIPS(net="alex").to(self.device)
+
+    def compute(self, gt_image_path, render_image_path):
+        gt_image = lpips.load_image(gt_image_path)
+        gt_image_tensor = lpips.im2tensor(gt_image).to(self.device)
+        render_image = lpips.load_image(render_image_path)
+        render_image_tensor = lpips.im2tensor(render_image).to(self.device)
+
+        lpips_score = self.loss_fn.forward(gt_image_tensor, render_image_tensor)
+        return lpips_score.cpu().item()
 
 
 def compute_gt_metrics(gt_image_path, pred_image_path):

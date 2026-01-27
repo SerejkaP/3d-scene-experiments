@@ -3,10 +3,11 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 import numpy as np
 import json
+from tqdm import tqdm
 from utils.gsplat_utils import render_camera, render_pano
 from utils.worldgen_utils import worldgen_generate
 from utils.dataset_2d3ds_utils import pose_json_by_image_path
-from utils.metrics import compute_gt_metrics
+from utils.metrics import compute_gt_metrics, LpipsMetric
 
 
 def create_gs(model_name, pano_path, save_path):
@@ -36,7 +37,12 @@ def render_2d3ds(ply_file, pano_json_path, camera_json_path, output_path):
 
 @hydra.main(config_path="conf", config_name="config")
 def main(cfg: DictConfig):
-    save_path = os.path.join(cfg.save_path, f"{cfg.model.name}_{cfg.dataset.name}")
+    save_path = os.path.join(cfg.save_path)
+    if not os.path.exists(save_path):
+        os.mkdir(save_path)
+    save_path = os.path.join(save_path, f"{cfg.model.name}_{cfg.dataset.name}")
+    if not os.path.exists(save_path):
+        os.mkdir(save_path)
     if cfg.dataset.name == "2d3ds":
         pano_path = os.path.join(cfg.dataset.path, "pano")
         pano_pose = os.path.join(pano_path, "pose")
@@ -59,22 +65,31 @@ def main(cfg: DictConfig):
             current_pano_rgb_name, pano_pose
         )
 
+        lpips_metric = LpipsMetric()
+
         num_iters = min(cfg.generation_iters, len(pano_img_list))
         for i in range(num_iters):
-            print(f"Generate scene for {current_pano_rgb_name}")
             current_pano_rgb_path = os.path.join(pano_images, current_pano_rgb_name)
-            ply_render_path = os.path.join(save_path, f"{pano_name}_render.ply")
-            # Generation time metric
-            generation_time = create_gs(
-                cfg.model.name, current_pano_rgb_path, ply_render_path
-            )
-            print("Generation time: ", generation_time)
-
             rendered_pano_path = os.path.join(save_path, f"{pano_name}_pano.png")
-            render_pano(
-                ply_render_path, [0, 0, 0], cfg.dataset.pano_width, rendered_pano_path
-            )
+            ply_render_path = os.path.join(save_path, f"{pano_name}_render.ply")
 
+            if cfg.generate:
+                print(f"Generate scene for {current_pano_rgb_name}")
+                # Generation time metric
+                generation_time = create_gs(
+                    cfg.model.name, current_pano_rgb_path, ply_render_path
+                )
+                print("Generation time: ", generation_time)
+
+                render_pano(
+                    ply_render_path,
+                    [0, 0, 0],
+                    cfg.dataset.pano_width,
+                    rendered_pano_path,
+                )
+
+            pano_lpips = lpips_metric.compute(current_pano_rgb_path, rendered_pano_path)
+            print("PANO LPIPS: ", pano_lpips)
             pano_psnr, pano_ssim = compute_gt_metrics(
                 current_pano_rgb_path, rendered_pano_path
             )
@@ -87,9 +102,10 @@ def main(cfg: DictConfig):
                 if camera_json.startswith(f"{pano_name}_")
             ]
 
+            total_lpips = 0
             total_psnr = 0
             total_ssim = 0
-            for camera_pose in camera_poses:
+            for camera_pose in tqdm(camera_poses):
                 camera_json_path = os.path.join(data_pose, camera_pose)
                 rendered_camera_subname = "_".join(camera_pose.split("_")[:-1])
                 rendered_camera = f"{rendered_camera_subname}_render.png"
@@ -105,12 +121,17 @@ def main(cfg: DictConfig):
                 gt_image_path = os.path.join(
                     data_images, f"{rendered_camera_subname}_rgb.png"
                 )
-                print(gt_image_path, rendered_camera_path)
+                lpips = lpips_metric.compute(gt_image_path, rendered_camera_path)
                 psnr, ssim = compute_gt_metrics(gt_image_path, rendered_camera_path)
+
+                total_lpips += lpips
                 total_psnr += psnr
                 total_ssim += ssim
+            scene_lpips = total_lpips / len(camera_poses)
             scene_psnr = total_psnr / len(camera_poses)
             scene_ssim = total_ssim / len(camera_poses)
+
+            print("LPIPS: ", scene_lpips)
             print("PSNR: ", scene_psnr)
             print("SSIM: ", scene_ssim)
 
