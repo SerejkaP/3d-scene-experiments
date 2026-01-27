@@ -34,6 +34,4 @@ def compute_gt_metrics(gt_image_path, pred_image_path):
     psnr = psnr_compute(original, contrast)
     # SSIM
     ssim = ssim_compute(original, contrast)
-    print("PSNR: ", psnr)
-    print("SSIM: ", ssim)
     return psnr, ssim

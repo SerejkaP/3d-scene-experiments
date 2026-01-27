@@ -59,7 +59,7 @@ def main(cfg: DictConfig):
         )
 
         num_iters = min(cfg.generation_iters, len(pano_img_list))
-        for i in range():
+        for i in range(num_iters):
             print(f"Generate scene for {current_pano_rgb_name}")
             current_pano_rgb_path = os.path.join(pano_images, current_pano_rgb_name)
             ply_render_path = os.path.join(cfg.save_path, f"{pano_name}_render.ply")
