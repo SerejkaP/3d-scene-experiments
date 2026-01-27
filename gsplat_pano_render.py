@@ -38,7 +38,7 @@ def get_cubemap_views(center):
     return viewmats
 
 
-def render_cubemap(ply_path, center_pos=[0, 0, 0], size=524, output_dir="cubemap_out"):
+def render_cubemap(ply_path, center_pos, size, output_dir):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     os.makedirs(output_dir, exist_ok=True)
 
@@ -79,7 +79,7 @@ def render_cubemap(ply_path, center_pos=[0, 0, 0], size=524, output_dir="cubemap
     return results
 
 
-def create_pano(faces: dict, output_dir="output"):
+def faces_to_pano(faces: dict, output_dir="output"):
     faces_view = [
         faces["front"],
         faces["right"],
@@ -93,9 +93,13 @@ def create_pano(faces: dict, output_dir="output"):
     cv2.imwrite(pano_path, equi_img)
 
 
-# --- ПАРАМЕТРЫ И ЗАПУСК ---
-ply_file = "/mnt/e/3D/experiments/output/WorldGen/splat.ply"
-cam_loc = [0, 0, 0]
+def create_pano(ply_path, center_pos=[0, 0, 0], size=1024, output_dir="output"):
+    faces = render_cubemap(ply_path, center_pos=center_pos, size=size)
+    faces_to_pano(faces, output_dir)
 
-faces = render_cubemap(ply_file, center_pos=cam_loc, size=1024)
-create_pano(faces)
+
+if __name__ == "__main__":
+    ply_file = "/mnt/e/3D/experiments/output/WorldGen/splat.ply"
+    cam_loc = [0, 0, 0]
+
+    create_pano(ply_file, center_pos=cam_loc, size=1024)

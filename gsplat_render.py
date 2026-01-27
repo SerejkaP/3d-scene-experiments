@@ -23,7 +23,7 @@ def correct_camera_orientation(pano_location, camera_location, pano_rt, camera_r
     return viewmat
 
 
-def render(
+def render_camera(
     ply_path,
     pano_location,
     camera_location,
@@ -85,7 +85,7 @@ if __name__ == "__main__":
     with open(camera_json_path, "r") as f:
         camera_data = json.load(f)
 
-    render(
+    render_camera(
         ply_file,
         pano_location=np.array(pano_data["camera_location"]),
         camera_location=np.array(camera_data["camera_location"]),

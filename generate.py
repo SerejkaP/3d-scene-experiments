@@ -3,7 +3,7 @@ import hydra
 from omegaconf import DictConfig
 import numpy as np
 import json
-from gsplat_render import render
+from gsplat_render import render_camera
 from utils.worldgen_utils import worldgen_generate
 from utils.dataset_2d3ds_utils import pose_json_by_image_path
 from utils.metrics import compute_gt_metrics
@@ -23,7 +23,7 @@ def render_2d3ds(ply_file, pano_json_path, camera_json_path, output_path):
     with open(camera_json_path, "r") as f:
         camera_data = json.load(f)
 
-    render(
+    render_camera(
         ply_file,
         pano_location=np.array(pano_data["camera_location"]),
         camera_location=np.array(camera_data["camera_location"]),
@@ -49,13 +49,17 @@ def main(cfg: DictConfig):
             for img_name in os.listdir(pano_images)
             if img_name.endswith(".png")
         ]
+        if len(pano_img_list) == 0:
+            raise Exception("No images in directory!!!")
+
         current_pano_rgb_name = pano_img_list[0]
 
         pano_json_path, pano_name = pose_json_by_image_path(
             current_pano_rgb_name, pano_pose
         )
 
-        for i in range(cfg.generation_iters):
+        num_iters = min(cfg.generation_iters, len(pano_img_list))
+        for i in range():
             print(f"Generate scene for {current_pano_rgb_name}")
             current_pano_rgb_path = os.path.join(pano_images, current_pano_rgb_name)
             ply_render_path = os.path.join(cfg.save_path, f"{pano_name}_render.ply")
@@ -104,6 +108,8 @@ def main(cfg: DictConfig):
         pass
     if cfg.dataset.name == "structured3d":
         pass
+    else:
+        raise Exception("Undefined dataset name!")
 
 
 if __name__ == "__main__":
