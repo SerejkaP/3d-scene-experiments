@@ -3,8 +3,7 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 import numpy as np
 import json
-from gsplat_render import render_camera
-from gsplat_pano_render import render_pano
+from utils.gsplat_utils import render_camera, render_pano
 from utils.worldgen_utils import worldgen_generate
 from utils.dataset_2d3ds_utils import pose_json_by_image_path
 from utils.metrics import compute_gt_metrics
@@ -37,6 +36,7 @@ def render_2d3ds(ply_file, pano_json_path, camera_json_path, output_path):
 
 @hydra.main(config_path="conf", config_name="config")
 def main(cfg: DictConfig):
+    save_path = os.path.join(cfg.save_path, f"{cfg.model.name}_{cfg.dataset.name}")
     if cfg.dataset.name == "2d3ds":
         pano_path = os.path.join(cfg.dataset.path, "pano")
         pano_pose = os.path.join(pano_path, "pose")
@@ -63,13 +63,14 @@ def main(cfg: DictConfig):
         for i in range(num_iters):
             print(f"Generate scene for {current_pano_rgb_name}")
             current_pano_rgb_path = os.path.join(pano_images, current_pano_rgb_name)
-            ply_render_path = os.path.join(cfg.save_path, f"{pano_name}_render.ply")
+            ply_render_path = os.path.join(save_path, f"{pano_name}_render.ply")
             # Generation time metric
             generation_time = create_gs(
                 cfg.model.name, current_pano_rgb_path, ply_render_path
             )
+            print("Generation time: ", generation_time)
 
-            rendered_pano_path = os.path.join(cfg.save_path, f"{pano_name}_pano.png")
+            rendered_pano_path = os.path.join(save_path, f"{pano_name}_pano.png")
             render_pano(
                 ply_render_path, [0, 0, 0], cfg.dataset.pano_width, rendered_pano_path
             )
@@ -92,7 +93,8 @@ def main(cfg: DictConfig):
                 camera_json_path = os.path.join(data_pose, camera_pose)
                 rendered_camera_subname = "_".join(camera_pose.split("_")[:-1])
                 rendered_camera = f"{rendered_camera_subname}_render.png"
-                rendered_camera_path = os.path.join(cfg.save_path, rendered_camera)
+                rendered_camera_path = os.path.join(save_path, rendered_camera)
+
                 render_2d3ds(
                     ply_render_path,
                     pano_json_path,
