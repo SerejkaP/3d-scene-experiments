@@ -2,10 +2,17 @@ defaults:
   - model: worldgen
   - dataset: 2d3ds
   - _self_
-  
+
 generation_iters: 1
 save_path: /mnt/e/3D/experiments/output
 generate: true
+
+tensorboard:
+  enabled: true
+  log_dir: null
+  flush_secs: 30
+  log_images: true
+  max_images_per_scene: 5
 
 hydra:
   run:
