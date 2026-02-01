@@ -7,7 +7,14 @@ from tqdm import tqdm
 from utils.gsplat_utils import render_camera, render_pano
 from utils.worldgen_utils import worldgen_generate
 from utils.dataset_2d3ds_utils import pose_json_by_image_path
-from utils.metrics import compute_gt_metrics, LpipsMetric
+from utils.metrics import (
+    ClipDistanceMetric,
+    compute_gt_metrics,
+    LpipsMetric,
+    compute_brisque,
+    compute_niqe,
+    FidMetric,
+)
 from utils.tensorboard_logger import TensorBoardLogger
 
 
@@ -69,6 +76,8 @@ def main(cfg: DictConfig):
             max_image_size=2048,
         )
         lpips_metric = LpipsMetric()
+        clip_metric = ClipDistanceMetric()
+        fid_metric = FidMetric()
 
         num_iters = min(cfg.generation_iters, len(pano_img_list))
         for i in range(num_iters):
@@ -94,19 +103,29 @@ def main(cfg: DictConfig):
                     rendered_pano_path,
                 )
 
-            # Panorama metric
+            # Panorama metrics (reference-based)
             pano_lpips = lpips_metric.compute(current_pano_rgb_path, rendered_pano_path)
+            pano_clip_d = clip_metric.compute(current_pano_rgb_path, rendered_pano_path)
             pano_psnr, pano_ssim = compute_gt_metrics(
                 current_pano_rgb_path, rendered_pano_path
             )
+            # Panorama metrics (reference-free)
+            pano_niqe = compute_niqe(rendered_pano_path)
+            pano_brisque = compute_brisque(rendered_pano_path)
 
             tb_logger.log_scalar(f"Metrics/Panorama/LPIPS", pano_lpips, i)
+            tb_logger.log_scalar(f"Metrics/Panorama/CLIP-Distance", pano_clip_d, i)
             tb_logger.log_scalar(f"Metrics/Panorama/PSNR", pano_psnr, i)
             tb_logger.log_scalar(f"Metrics/Panorama/SSIM", pano_ssim, i)
+            tb_logger.log_scalar(f"Metrics/Panorama/NIQE", pano_niqe, i)
+            tb_logger.log_scalar(f"Metrics/Panorama/BRISQUE", pano_brisque, i)
 
             print(f"PANO LPIPS: {pano_lpips}")
+            print(f"PANO CLIP-Distance: {pano_clip_d}")
             print(f"PANO PSNR: {pano_psnr}")
             print(f"PANO SSIM: {pano_ssim}")
+            print(f"PANO NIQE: {pano_niqe}")
+            print(f"PANO BRISQUE: {pano_brisque}")
 
             if cfg.tensorboard.log_images:
                 tb_logger.log_image_comparison(
@@ -123,8 +142,13 @@ def main(cfg: DictConfig):
             ]
 
             total_lpips = 0
+            total_clip_distance = 0
             total_psnr = 0
             total_ssim = 0
+            total_niqe = 0
+            total_brisque = 0
+            gt_paths_for_fid = []
+            render_paths_for_fid = []
             for camera_idx, camera_pose in enumerate(tqdm(camera_poses)):
                 camera_json_path = os.path.join(data_pose, camera_pose)
                 rendered_camera_subname = "_".join(camera_pose.split("_")[:-1])
@@ -142,18 +166,33 @@ def main(cfg: DictConfig):
                     data_images, f"{rendered_camera_subname}_rgb.png"
                 )
 
-                # Camera metrics
+                # Camera metrics (reference-based)
                 lpips = lpips_metric.compute(gt_image_path, rendered_camera_path)
+                clip_distance = clip_metric.compute(gt_image_path, rendered_camera_path)
                 psnr, ssim = compute_gt_metrics(gt_image_path, rendered_camera_path)
+                # Camera metrics (reference-free)
+                niqe = compute_niqe(rendered_camera_path)
+                brisque = compute_brisque(rendered_camera_path)
 
                 tb_logger.log_scalar(
                     f"Metrics/Camera_{pano_name}/LPIPS", lpips, camera_idx
+                )
+                tb_logger.log_scalar(
+                    f"Metrics/Camera_{pano_name}/CLIP-Distance",
+                    clip_distance,
+                    camera_idx,
                 )
                 tb_logger.log_scalar(
                     f"Metrics/Camera_{pano_name}/PSNR", psnr, camera_idx
                 )
                 tb_logger.log_scalar(
                     f"Metrics/Camera_{pano_name}/SSIM", ssim, camera_idx
+                )
+                tb_logger.log_scalar(
+                    f"Metrics/Camera_{pano_name}/NIQE", niqe, camera_idx
+                )
+                tb_logger.log_scalar(
+                    f"Metrics/Camera_{pano_name}/BRISQUE", brisque, camera_idx
                 )
 
                 if (
@@ -168,20 +207,37 @@ def main(cfg: DictConfig):
                     )
 
                 total_lpips += lpips
+                total_clip_distance += clip_distance
                 total_psnr += psnr
                 total_ssim += ssim
+                total_niqe += niqe
+                total_brisque += brisque
+                gt_paths_for_fid.append(gt_image_path)
+                render_paths_for_fid.append(rendered_camera_path)
 
             scene_lpips = total_lpips / len(camera_poses)
+            scene_clip_d = total_clip_distance / len(camera_poses)
             scene_psnr = total_psnr / len(camera_poses)
             scene_ssim = total_ssim / len(camera_poses)
+            scene_niqe = total_niqe / len(camera_poses)
+            scene_brisque = total_brisque / len(camera_poses)
+            scene_fid = fid_metric.compute(gt_paths_for_fid, render_paths_for_fid)
 
             tb_logger.log_scalar("Metrics/Scene/LPIPS_mean", scene_lpips, i)
+            tb_logger.log_scalar("Metrics/Scene/CLIP-Distance_mean", scene_clip_d, i)
             tb_logger.log_scalar("Metrics/Scene/PSNR_mean", scene_psnr, i)
             tb_logger.log_scalar("Metrics/Scene/SSIM_mean", scene_ssim, i)
+            tb_logger.log_scalar("Metrics/Scene/NIQE_mean", scene_niqe, i)
+            tb_logger.log_scalar("Metrics/Scene/BRISQUE_mean", scene_brisque, i)
+            tb_logger.log_scalar("Metrics/Scene/FID", scene_fid, i)
 
             print(f"Scene average LPIPS: {scene_lpips}")
+            print(f"Scene average CLIP-Distance: {scene_clip_d}")
             print(f"Scene average PSNR: {scene_psnr}")
             print(f"Scene average SSIM: {scene_ssim}")
+            print(f"Scene average NIQE: {scene_niqe}")
+            print(f"Scene average BRISQUE: {scene_brisque}")
+            print(f"Scene FID: {scene_fid}")
 
             current_pano_rgb_name = pano_img_list[i]
             pano_json_path, pano_name = pose_json_by_image_path(

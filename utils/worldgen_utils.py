@@ -4,7 +4,7 @@ from worldgen import WorldGen
 from PIL import Image
 
 
-def worldgen_generate(pano_path, save_path):
+def worldgen_generate(pano_path: str, save_path: str) -> float:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     low_vram = torch.cuda.get_device_properties(0).total_memory / (1024**3) < 24
     pano_image = Image.open(pano_path).convert("RGB")
