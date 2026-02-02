@@ -185,3 +185,64 @@ def compute_brisque(image_path: str):
     with torch.no_grad():
         score = piq.brisque(tensor, data_range=1.0, reduction="none")
     return score.item()
+
+
+class DepthMetrics:
+    def __init__(self, min_depth: float = 0.0, max_depth: float = 100.0):
+        self.min_depth = min_depth
+        self.max_depth = max_depth
+
+    def compute(
+        self,
+        gt_depth: np.ndarray,
+        pred_depth: np.ndarray,
+        mask: Optional[np.ndarray] = None,
+    ):
+        if gt_depth.ndim == 3:
+            gt_depth = gt_depth.squeeze(-1)
+        if pred_depth.ndim == 3:
+            pred_depth = pred_depth.squeeze(-1)
+        if gt_depth.shape != pred_depth.shape:
+            pred_depth = cv2.resize(
+                pred_depth,
+                (gt_depth.shape[1], gt_depth.shape[0]),
+                interpolation=cv2.INTER_LINEAR,
+            )
+        if mask is None:
+            mask = np.ones_like(gt_depth, dtype=bool)
+        else:
+            mask = mask.astype(bool)
+        valid_mask = (
+            mask
+            & (gt_depth > self.min_depth)
+            & (gt_depth < self.max_depth)
+            & (pred_depth > self.min_depth)
+            & (pred_depth < self.max_depth)
+        )
+
+        if not valid_mask.any():
+            return {
+                "rmse": float("nan"),
+                "abs_rel": float("nan"),
+                "sq_rel": float("nan"),
+                "rmse_log": float("nan"),
+            }
+
+        gt_valid = gt_depth[valid_mask]
+        pred_valid = pred_depth[valid_mask]
+
+        # RMSE (Root Mean Square Error)
+        rmse = np.sqrt(np.mean((gt_valid - pred_valid) ** 2))
+        # Abs Rel (Absolute Relative Error)
+        abs_rel = np.mean(np.abs(gt_valid - pred_valid) / gt_valid)
+        # Sq Rel (Squared Relative Error)
+        sq_rel = np.mean(((gt_valid - pred_valid) ** 2) / gt_valid)
+        # RMSE log
+        rmse_log = np.sqrt(np.mean((np.log(gt_valid) - np.log(pred_valid)) ** 2))
+
+        return {
+            "rmse": float(rmse),
+            "abs_rel": float(abs_rel),
+            "sq_rel": float(sq_rel),
+            "rmse_log": float(rmse_log),
+        }

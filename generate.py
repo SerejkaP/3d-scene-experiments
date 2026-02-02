@@ -4,7 +4,7 @@ from omegaconf import DictConfig, OmegaConf
 import numpy as np
 import json
 from tqdm import tqdm
-from utils.gsplat_utils import render_camera, render_pano
+from utils.gsplat_utils import render_camera, render_pano, load_depth
 from utils.worldgen_utils import worldgen_generate
 from utils.dataset_2d3ds_utils import pose_json_by_image_path
 from utils.metrics import (
@@ -14,6 +14,7 @@ from utils.metrics import (
     compute_brisque,
     compute_niqe,
     FidMetric,
+    DepthMetrics,
 )
 from utils.tensorboard_logger import TensorBoardLogger
 
@@ -43,7 +44,22 @@ def render_2d3ds(ply_file, pano_json_path, camera_json_path, output_path):
     )
 
 
-def render_structured3d(ply_file, pano_position, camera_pose_path, output_path):
+def render_structured3d(
+    ply_file, pano_position, camera_pose_path, output_path, output_depth_path=None
+):
+    """
+    Render perspective view for Structured3D dataset.
+
+    Args:
+        ply_file: Path to PLY file with Gaussian Splatting scene
+        pano_position: Panorama position in Structured3D coordinates (millimeters)
+        camera_pose_path: Path to camera_pose.txt file
+        output_path: Path to save rendered RGB image
+        output_depth_path: Optional path to save rendered depth map
+
+    Returns:
+        Tuple of (rgb_image, depth_map) as numpy arrays
+    """
     values = np.loadtxt(camera_pose_path)
     camera_location = values[0:3]
 
@@ -81,7 +97,7 @@ def render_structured3d(ply_file, pano_position, camera_pose_path, output_path):
         dtype=np.float64,
     )
 
-    render_camera(
+    return render_camera(
         ply_file,
         pano_location=pano_location_m,
         camera_location=camera_location_m,
@@ -89,6 +105,7 @@ def render_structured3d(ply_file, pano_position, camera_pose_path, output_path):
         camera_rt=camera_R_cv,
         camera_k=camera_k,
         output_path=output_path,
+        output_depth_path=output_depth_path,
     )
 
 
@@ -293,7 +310,6 @@ def main(cfg: DictConfig):
                 current_pano_rgb_name, pano_pose
             )
 
-        # Close TensorBoard logger
         tb_logger.close()
     elif cfg.dataset.name == "ob3d":
         pass
@@ -310,6 +326,7 @@ def main(cfg: DictConfig):
         lpips_metric = LpipsMetric()
         clip_metric = ClipDistanceMetric()
         fid_metric = FidMetric()
+        depth_metric = DepthMetrics(min_depth=0.0, max_depth=100.0)
 
         room_idx = 0
         for scene in scenes:
@@ -348,7 +365,13 @@ def main(cfg: DictConfig):
                 os.makedirs(room_save_path, exist_ok=True)
 
                 rendered_pano_path = os.path.join(room_save_path, "pano_render.png")
+                rendered_pano_depth_path = os.path.join(
+                    room_save_path, "pano_depth.exr"
+                )
                 ply_render_path = os.path.join(room_save_path, "scene.ply")
+
+                # Ground truth panorama depth path
+                gt_pano_depth_path = os.path.join(panorama_dir, "full", "depth.png")
 
                 if cfg.generate:
                     print(f"Generate scene for {room_name}")
@@ -367,6 +390,7 @@ def main(cfg: DictConfig):
                         [0, 0, 0],
                         cfg.dataset.pano_width,
                         rendered_pano_path,
+                        output_depth_path=rendered_pano_depth_path,
                     )
 
                 # Panorama metrics (reference-based)
@@ -378,6 +402,50 @@ def main(cfg: DictConfig):
                 # Panorama metrics (reference-free)
                 pano_niqe = compute_niqe(rendered_pano_path)
                 pano_brisque = compute_brisque(rendered_pano_path)
+
+                # Panorama depth metrics
+                pano_depth_rmse = float("nan")
+                pano_depth_abs_rel = float("nan")
+
+                if os.path.exists(gt_pano_depth_path) and os.path.exists(
+                    rendered_pano_depth_path
+                ):
+                    try:
+                        # Load panorama depth maps
+                        # Structured3D panorama depth is in millimeters (PNG uint16)
+                        gt_pano_depth = load_depth(
+                            gt_pano_depth_path, depth_scale=1.0 / 1000.0
+                        )
+                        # Rendered panorama depth is in EXR (meters)
+                        render_pano_depth = load_depth(
+                            rendered_pano_depth_path,
+                            depth_scale=(
+                                1.0 / 1000.0
+                                if rendered_pano_depth_path.endswith(".png")
+                                else 1.0
+                            ),
+                        )
+
+                        pano_depth_metrics = depth_metric.compute(
+                            gt_pano_depth, render_pano_depth
+                        )
+
+                        if not np.isnan(pano_depth_metrics["rmse"]):
+                            pano_depth_rmse = pano_depth_metrics["rmse"]
+                            pano_depth_abs_rel = pano_depth_metrics["abs_rel"]
+
+                            tb_logger.log_scalar(
+                                "Metrics/Panorama/Depth_RMSE", pano_depth_rmse, room_idx
+                            )
+                            tb_logger.log_scalar(
+                                "Metrics/Panorama/Depth_AbsRel",
+                                pano_depth_abs_rel,
+                                room_idx,
+                            )
+                    except Exception as e:
+                        print(
+                            f"Warning: Could not compute panorama depth metrics for {room_name}: {e}"
+                        )
 
                 tb_logger.log_scalar("Metrics/Panorama/LPIPS", pano_lpips, room_idx)
                 tb_logger.log_scalar(
@@ -394,6 +462,9 @@ def main(cfg: DictConfig):
                 print(f"PANO SSIM: {pano_ssim}")
                 print(f"PANO NIQE: {pano_niqe}")
                 print(f"PANO BRISQUE: {pano_brisque}")
+                if not np.isnan(pano_depth_rmse):
+                    print(f"PANO Depth RMSE: {pano_depth_rmse:.4f}")
+                    print(f"PANO Depth Abs Rel: {pano_depth_abs_rel:.4f}")
 
                 if cfg.tensorboard.log_images:
                     tb_logger.log_image_comparison(
@@ -425,10 +496,16 @@ def main(cfg: DictConfig):
                 gt_paths_for_fid = []
                 render_paths_for_fid = []
 
+                # Depth metrics accumulators
+                total_rmse = 0
+                total_abs_rel = 0
+                depth_count = 0
+
                 for camera_idx, view_dir in enumerate(tqdm(view_dirs)):
                     view_path = os.path.join(perspective_dir, view_dir)
                     camera_pose_file = os.path.join(view_path, "camera_pose.txt")
                     gt_image_path = os.path.join(view_path, "rgb_rawlight.png")
+                    gt_depth_path = os.path.join(view_path, "depth.png")
 
                     if not os.path.exists(camera_pose_file) or not os.path.exists(
                         gt_image_path
@@ -438,12 +515,16 @@ def main(cfg: DictConfig):
                     rendered_camera_path = os.path.join(
                         room_save_path, f"view_{view_dir}_render.png"
                     )
+                    rendered_depth_path = os.path.join(
+                        room_save_path, f"view_{view_dir}_depth.exr"
+                    )
 
                     render_structured3d(
                         ply_render_path,
                         pano_position,
                         camera_pose_file,
                         rendered_camera_path,
+                        output_depth_path=rendered_depth_path,
                     )
 
                     # Camera metrics (reference-based)
@@ -455,6 +536,39 @@ def main(cfg: DictConfig):
                     # Camera metrics (reference-free)
                     niqe = compute_niqe(rendered_camera_path)
                     brisque = compute_brisque(rendered_camera_path)
+
+                    # Depth metrics (if ground truth depth exists)
+                    if os.path.exists(gt_depth_path) and os.path.exists(
+                        rendered_depth_path
+                    ):
+
+                        gt_depth = load_depth(gt_depth_path, depth_scale=1.0 / 1000.0)
+                        render_depth = load_depth(
+                            rendered_depth_path,
+                            depth_scale=(
+                                1.0 / 1000.0
+                                if rendered_depth_path.endswith(".png")
+                                else 1.0
+                            ),
+                        )
+
+                        depth_metrics = depth_metric.compute(gt_depth, render_depth)
+
+                        if not np.isnan(depth_metrics["rmse"]):
+                            tb_logger.log_scalar(
+                                f"Metrics/Camera_{room_name}/Depth_RMSE",
+                                depth_metrics["rmse"],
+                                camera_idx,
+                            )
+                            tb_logger.log_scalar(
+                                f"Metrics/Camera_{room_name}/Depth_AbsRel",
+                                depth_metrics["abs_rel"],
+                                camera_idx,
+                            )
+
+                            total_rmse += depth_metrics["rmse"]
+                            total_abs_rel += depth_metrics["abs_rel"]
+                            depth_count += 1
 
                     tb_logger.log_scalar(
                         f"Metrics/Camera_{room_name}/LPIPS",
@@ -540,6 +654,21 @@ def main(cfg: DictConfig):
                         "Metrics/Scene/BRISQUE_mean", scene_brisque, room_idx
                     )
                     tb_logger.log_scalar("Metrics/Scene/FID", scene_fid, room_idx)
+
+                    # Log depth metrics
+                    if depth_count > 0:
+                        scene_rmse = total_rmse / depth_count
+                        scene_abs_rel = total_abs_rel / depth_count
+
+                        tb_logger.log_scalar(
+                            "Metrics/Scene/Depth_RMSE_mean", scene_rmse, room_idx
+                        )
+                        tb_logger.log_scalar(
+                            "Metrics/Scene/Depth_AbsRel_mean", scene_abs_rel, room_idx
+                        )
+
+                        print(f"Scene average Depth RMSE: {scene_rmse:.4f}")
+                        print(f"Scene average Depth Abs Rel: {scene_abs_rel:.4f}")
 
                     print(f"Scene average LPIPS: {scene_lpips}")
                     print(f"Scene average CLIP-Distance: {scene_clip_d}")
