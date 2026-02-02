@@ -1,2 +1,3 @@
 name: structured3d
 path: "/mnt/d/datasets/Structured3D"
+pano_width: 1024

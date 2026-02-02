@@ -167,9 +167,12 @@ def compute_niqe(image_path: str, crop_border: int = 0):
     image = cv2.imread(image_path)
     if image.shape[-1] == 4:
         image = image[..., :3]
-    return calculate_niqe(
-        image, crop_border=crop_border, input_order="HWC", convert_to="y"
-    )
+    try:
+        return calculate_niqe(
+            image, crop_border=crop_border, input_order="HWC", convert_to="y"
+        )
+    except np.linalg.LinAlgError:
+        return float("nan")
 
 
 def compute_brisque(image_path: str):
