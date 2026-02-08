@@ -1,2 +1,4 @@
 name: ob3d
 path: "/mnt/d/datasets/OB3D"
+pano_width: 1600
+pano_height: 800

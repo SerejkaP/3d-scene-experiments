@@ -337,13 +337,15 @@ def main(cfg: DictConfig):
             flush_secs=cfg.tensorboard.flush_secs,
             max_image_size=2048,
         )
+        lpips_metric = LpipsMetric()
+        clip_metric = ClipDistanceMetric()
+        fid_metric = FidMetric()
         counter = 0
         dataset_path = str(cfg.dataset.path)
         for scene in os.listdir(dataset_path):
             for scene_type in ["Egocentric", "Non-Egocentric"]:
                 # cameras/, depth/, images/, normals/, sparse/, test.txt, train.txt
                 scene_path = os.path.join(dataset_path, scene, scene_type)
-                cameras_path = os.path.join(scene_path, "cameras")
                 images_path = os.path.join(scene_path, "images")
                 depth_path = os.path.join(scene_path, "depth")
                 test_data = []
@@ -353,23 +355,25 @@ def main(cfg: DictConfig):
                     if counter >= cfg.generation_iters:
                         break
                     t_scene = f"{str(t).zfill(5)}"
-                    current_camera_path = os.path.join(
-                        cameras_path, f"{t_scene}_cam.json"
+                    rendered_pano_path = os.path.join(
+                        save_path, scene, scene_type, f"{t_scene}_pano.png"
                     )
-                    current_image_path = os.path.join(images_path, f"{t_scene}_rgb.png")
-                    current_depth_path = os.path.join(
-                        depth_path, f"{t_scene}_depth.exr"
+                    rendered_pano_depth_path = os.path.join(
+                        save_path, scene, scene_type, f"{t_scene}_depth.exr"
                     )
                     ply_render_path = os.path.join(
-                        save_path, f"{scene}_{scene_type}_{t}_render.ply"
+                        save_path, f"{scene}_{scene_type}_{t_scene}_render.ply"
                     )
+                    pano_rgb_path = os.path.join(images_path, f"{t_scene}_rgb.png")
+                    gt_pano_depth_path = os.path.join(
+                        depth_path, f"{t_scene}_depth.exr"
+                    )
+                    room_name = f"{scene}/{scene_type}/{t_scene}"
                     if cfg.generate:
-                        print(
-                            f"Generate scene for {scene}/{scene_type}/{t_scene}_rgb.png"
-                        )
+                        print(f"Generate scene for {room_name}_rgb.png")
                         # Generation time metric
                         generation_time = create_gs(
-                            cfg.model.name, current_image_path, ply_render_path
+                            cfg.model.name, pano_rgb_path, ply_render_path
                         )
                         tb_logger.log_scalar(
                             "Performance/generation_time_seconds",
@@ -383,6 +387,92 @@ def main(cfg: DictConfig):
                             [0, 0, 0],
                             cfg.dataset.pano_width,
                             rendered_pano_path,
+                            rendered_pano_depth_path,
+                        )
+
+                    # Panorama metrics (reference-based)
+                    pano_lpips = lpips_metric.compute(pano_rgb_path, rendered_pano_path)
+                    pano_clip_d = clip_metric.compute(pano_rgb_path, rendered_pano_path)
+                    pano_psnr, pano_ssim = compute_gt_metrics(
+                        pano_rgb_path, rendered_pano_path
+                    )
+                    # Panorama metrics (reference-free)
+                    pano_niqe = compute_niqe(rendered_pano_path)
+                    pano_brisque = compute_brisque(rendered_pano_path)
+
+                    # Panorama depth metrics
+                    pano_depth_rmse = float("nan")
+                    pano_depth_abs_rel = float("nan")
+
+                    if os.path.exists(gt_pano_depth_path) and os.path.exists(
+                        rendered_pano_depth_path
+                    ):
+                        try:
+                            # Load panorama depth maps
+                            # Structured3D panorama depth is in millimeters (PNG uint16)
+                            gt_pano_depth = load_depth(
+                                gt_pano_depth_path, depth_scale=1.0 / 1000.0
+                            )
+                            # Rendered panorama depth is in EXR (meters)
+                            render_pano_depth = load_depth(
+                                rendered_pano_depth_path,
+                                depth_scale=(
+                                    1.0 / 1000.0
+                                    if rendered_pano_depth_path.endswith(".png")
+                                    else 1.0
+                                ),
+                            )
+
+                            pano_depth_metrics = depth_metric.compute(
+                                gt_pano_depth, render_pano_depth
+                            )
+
+                            if not np.isnan(pano_depth_metrics["rmse"]):
+                                pano_depth_rmse = pano_depth_metrics["rmse"]
+                                pano_depth_abs_rel = pano_depth_metrics["abs_rel"]
+
+                                tb_logger.log_scalar(
+                                    "Metrics/Panorama/Depth_RMSE",
+                                    pano_depth_rmse,
+                                    counter,
+                                )
+                                tb_logger.log_scalar(
+                                    "Metrics/Panorama/Depth_AbsRel",
+                                    pano_depth_abs_rel,
+                                    counter,
+                                )
+                        except Exception as e:
+                            print(
+                                f"Warning: Could not compute panorama depth metrics for {room_name}: {e}"
+                            )
+
+                    tb_logger.log_scalar("Metrics/Panorama/LPIPS", pano_lpips, counter)
+                    tb_logger.log_scalar(
+                        "Metrics/Panorama/CLIP-Distance", pano_clip_d, counter
+                    )
+                    tb_logger.log_scalar("Metrics/Panorama/PSNR", pano_psnr, counter)
+                    tb_logger.log_scalar("Metrics/Panorama/SSIM", pano_ssim, counter)
+                    tb_logger.log_scalar("Metrics/Panorama/NIQE", pano_niqe, counter)
+                    tb_logger.log_scalar(
+                        "Metrics/Panorama/BRISQUE", pano_brisque, counter
+                    )
+
+                    print(f"PANO LPIPS: {pano_lpips}")
+                    print(f"PANO CLIP-Distance: {pano_clip_d}")
+                    print(f"PANO PSNR: {pano_psnr}")
+                    print(f"PANO SSIM: {pano_ssim}")
+                    print(f"PANO NIQE: {pano_niqe}")
+                    print(f"PANO BRISQUE: {pano_brisque}")
+                    if not np.isnan(pano_depth_rmse):
+                        print(f"PANO Depth RMSE: {pano_depth_rmse:.4f}")
+                        print(f"PANO Depth Abs Rel: {pano_depth_abs_rel:.4f}")
+
+                    if cfg.tensorboard.log_images:
+                        tb_logger.log_image_comparison(
+                            f"Images/Panorama/{room_name}",
+                            pano_rgb_path,
+                            rendered_pano_path,
+                            counter,
                         )
 
                     counter += 1
