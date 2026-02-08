@@ -16,6 +16,11 @@ from utils.metrics import (
     FidMetric,
     DepthMetrics,
 )
+from utils.ob3d_utils.eval_nvs import calculate_metrics
+from utils.ob3d_utils.eval_depth import (
+    calculate_rmse,
+    calculate_abs_relative_difference,
+)
 from utils.tensorboard_logger import TensorBoardLogger
 
 
@@ -42,6 +47,20 @@ def render_2d3ds(ply_file, pano_json_path, camera_json_path, output_path):
         camera_k=np.array(camera_data["camera_k_matrix"]),
         output_path=output_path,
     )
+
+
+def render_ob3d(ply_file, camera_pose_path, output_path, output_depth_path=None):
+    with open(camera_pose_path, "r") as f:
+        data = json.load(f)
+        data = data[0]
+
+    rotation_w2c = np.array(data["extrinsics"]["rotation"])  # w2c
+    translation_w2c = np.array(data["extrinsics"]["translation"])  # w2c
+    rotation_c2w = rotation_w2c.T
+    translation_c2w = -rotation_c2w @ translation_w2c
+    se3 = np.eye(4)
+    se3[:3, :3] = rotation_c2w
+    se3[:3, 3] = translation_c2w
 
 
 def render_structured3d(
@@ -309,10 +328,66 @@ def main(cfg: DictConfig):
             pano_json_path, pano_name = pose_json_by_image_path(
                 current_pano_rgb_name, pano_pose
             )
-
         tb_logger.close()
+
     elif cfg.dataset.name == "ob3d":
-        pass
+        tb_logger = TensorBoardLogger(
+            log_dir=cfg.tensorboard.log_dir or save_path,
+            enabled=cfg.tensorboard.enabled,
+            flush_secs=cfg.tensorboard.flush_secs,
+            max_image_size=2048,
+        )
+        counter = 0
+        dataset_path = str(cfg.dataset.path)
+        for scene in os.listdir(dataset_path):
+            for scene_type in ["Egocentric", "Non-Egocentric"]:
+                # cameras/, depth/, images/, normals/, sparse/, test.txt, train.txt
+                scene_path = os.path.join(dataset_path, scene, scene_type)
+                cameras_path = os.path.join(scene_path, "cameras")
+                images_path = os.path.join(scene_path, "images")
+                depth_path = os.path.join(scene_path, "depth")
+                test_data = []
+                with open(os.path.join(scene_path, "test.txt"), "r") as f:
+                    test_data = [int(line.strip()) for line in f.readlines()]
+                for t in test_data:
+                    if counter >= cfg.generation_iters:
+                        break
+                    t_scene = f"{str(t).zfill(5)}"
+                    current_camera_path = os.path.join(
+                        cameras_path, f"{t_scene}_cam.json"
+                    )
+                    current_image_path = os.path.join(images_path, f"{t_scene}_rgb.png")
+                    current_depth_path = os.path.join(
+                        depth_path, f"{t_scene}_depth.exr"
+                    )
+                    ply_render_path = os.path.join(
+                        save_path, f"{scene}_{scene_type}_{t}_render.ply"
+                    )
+                    if cfg.generate:
+                        print(
+                            f"Generate scene for {scene}/{scene_type}/{t_scene}_rgb.png"
+                        )
+                        # Generation time metric
+                        generation_time = create_gs(
+                            cfg.model.name, current_image_path, ply_render_path
+                        )
+                        tb_logger.log_scalar(
+                            "Performance/generation_time_seconds",
+                            generation_time,
+                            counter,
+                        )
+                        print("Generation time: ", generation_time)
+
+                        render_pano(
+                            ply_render_path,
+                            [0, 0, 0],
+                            cfg.dataset.pano_width,
+                            rendered_pano_path,
+                        )
+
+                    counter += 1
+        tb_logger.close()
+
     elif cfg.dataset.name == "structured3d":
         dataset_path = str(cfg.dataset.path)
         scenes = sorted([s for s in os.listdir(dataset_path) if s.startswith("scene_")])
