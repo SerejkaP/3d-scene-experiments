@@ -22,6 +22,7 @@ from utils.ob3d_utils.eval_depth import (
     calculate_abs_relative_difference,
 )
 from utils.tensorboard_logger import TensorBoardLogger
+from utils.metrics_computer import MetricsComputer
 
 
 def create_gs(model_name, pano_path, save_path):
@@ -163,6 +164,13 @@ def main(cfg: DictConfig):
         lpips_metric = LpipsMetric()
         clip_metric = ClipDistanceMetric()
         fid_metric = FidMetric()
+        metrics_computer = MetricsComputer(
+            lpips_metric=lpips_metric,
+            clip_metric=clip_metric,
+            fid_metric=fid_metric,
+            depth_metric=None,
+            tb_logger=tb_logger,
+        )
 
         num_iters = min(cfg.generation_iters, len(pano_img_list))
         for i in range(num_iters):
@@ -188,37 +196,22 @@ def main(cfg: DictConfig):
                     rendered_pano_path,
                 )
 
-            # Panorama metrics (reference-based)
-            pano_lpips = lpips_metric.compute(current_pano_rgb_path, rendered_pano_path)
-            pano_clip_d = clip_metric.compute(current_pano_rgb_path, rendered_pano_path)
-            pano_psnr, pano_ssim = compute_gt_metrics(
-                current_pano_rgb_path, rendered_pano_path
+            # Compute and log panorama metrics
+            pano_metrics = metrics_computer.compute_and_log_panorama_metrics(
+                gt_path=current_pano_rgb_path,
+                rendered_path=rendered_pano_path,
+                step=i,
+                scene_name=pano_name,
             )
-            # Panorama metrics (reference-free)
-            pano_niqe = compute_niqe(rendered_pano_path)
-            pano_brisque = compute_brisque(rendered_pano_path)
 
-            tb_logger.log_scalar(f"Metrics/Panorama/LPIPS", pano_lpips, i)
-            tb_logger.log_scalar(f"Metrics/Panorama/CLIP-Distance", pano_clip_d, i)
-            tb_logger.log_scalar(f"Metrics/Panorama/PSNR", pano_psnr, i)
-            tb_logger.log_scalar(f"Metrics/Panorama/SSIM", pano_ssim, i)
-            tb_logger.log_scalar(f"Metrics/Panorama/NIQE", pano_niqe, i)
-            tb_logger.log_scalar(f"Metrics/Panorama/BRISQUE", pano_brisque, i)
-
-            print(f"PANO LPIPS: {pano_lpips}")
-            print(f"PANO CLIP-Distance: {pano_clip_d}")
-            print(f"PANO PSNR: {pano_psnr}")
-            print(f"PANO SSIM: {pano_ssim}")
-            print(f"PANO NIQE: {pano_niqe}")
-            print(f"PANO BRISQUE: {pano_brisque}")
-
-            if cfg.tensorboard.log_images:
-                tb_logger.log_image_comparison(
-                    f"Images/Panorama/{pano_name}",
-                    current_pano_rgb_path,
-                    rendered_pano_path,
-                    i,
-                )
+            # Log panorama image comparison
+            metrics_computer.log_image_comparison(
+                tag=f"Images/Panorama/{pano_name}",
+                gt_path=current_pano_rgb_path,
+                rendered_path=rendered_pano_path,
+                step=i,
+                log_images=cfg.tensorboard.log_images,
+            )
 
             camera_poses = [
                 camera_json
@@ -226,12 +219,7 @@ def main(cfg: DictConfig):
                 if camera_json.startswith(f"{pano_name}_")
             ]
 
-            total_lpips = 0
-            total_clip_distance = 0
-            total_psnr = 0
-            total_ssim = 0
-            total_niqe = 0
-            total_brisque = 0
+            camera_metrics_list = []
             gt_paths_for_fid = []
             render_paths_for_fid = []
             for camera_idx, camera_pose in enumerate(tqdm(camera_poses)):
@@ -251,78 +239,43 @@ def main(cfg: DictConfig):
                     data_images, f"{rendered_camera_subname}_rgb.png"
                 )
 
-                # Camera metrics (reference-based)
-                lpips = lpips_metric.compute(gt_image_path, rendered_camera_path)
-                clip_distance = clip_metric.compute(gt_image_path, rendered_camera_path)
-                psnr, ssim = compute_gt_metrics(gt_image_path, rendered_camera_path)
-                # Camera metrics (reference-free)
-                niqe = compute_niqe(rendered_camera_path)
-                brisque = compute_brisque(rendered_camera_path)
-
-                tb_logger.log_scalar(
-                    f"Metrics/Camera_{pano_name}/LPIPS", lpips, camera_idx
-                )
-                tb_logger.log_scalar(
-                    f"Metrics/Camera_{pano_name}/CLIP-Distance",
-                    clip_distance,
-                    camera_idx,
-                )
-                tb_logger.log_scalar(
-                    f"Metrics/Camera_{pano_name}/PSNR", psnr, camera_idx
-                )
-                tb_logger.log_scalar(
-                    f"Metrics/Camera_{pano_name}/SSIM", ssim, camera_idx
-                )
-                tb_logger.log_scalar(
-                    f"Metrics/Camera_{pano_name}/NIQE", niqe, camera_idx
-                )
-                tb_logger.log_scalar(
-                    f"Metrics/Camera_{pano_name}/BRISQUE", brisque, camera_idx
+                # Compute camera metrics
+                camera_metrics = metrics_computer.compute_camera_metrics(
+                    gt_image_path=gt_image_path,
+                    rendered_image_path=rendered_camera_path,
                 )
 
-                if (
-                    cfg.tensorboard.log_images
-                    and camera_idx < cfg.tensorboard.max_images_per_scene
-                ):
-                    tb_logger.log_image_comparison(
-                        f"Images/Camera/{rendered_camera_subname}",
-                        gt_image_path,
-                        rendered_camera_path,
-                        i,
-                    )
+                # Log camera metrics
+                metrics_computer.log_camera_metrics(
+                    metrics_dict=camera_metrics,
+                    scene_name=pano_name,
+                    camera_idx=camera_idx,
+                )
 
-                total_lpips += lpips
-                total_clip_distance += clip_distance
-                total_psnr += psnr
-                total_ssim += ssim
-                total_niqe += niqe
-                total_brisque += brisque
+                # Log camera image comparison
+                metrics_computer.log_image_comparison(
+                    tag=f"Images/Camera/{rendered_camera_subname}",
+                    gt_path=gt_image_path,
+                    rendered_path=rendered_camera_path,
+                    step=i,
+                    log_images=(
+                        cfg.tensorboard.log_images
+                        and camera_idx < cfg.tensorboard.max_images_per_scene
+                    ),
+                )
+
+                # Collect metrics for scene aggregation
+                camera_metrics_list.append(camera_metrics)
                 gt_paths_for_fid.append(gt_image_path)
                 render_paths_for_fid.append(rendered_camera_path)
 
-            scene_lpips = total_lpips / len(camera_poses)
-            scene_clip_d = total_clip_distance / len(camera_poses)
-            scene_psnr = total_psnr / len(camera_poses)
-            scene_ssim = total_ssim / len(camera_poses)
-            scene_niqe = total_niqe / len(camera_poses)
-            scene_brisque = total_brisque / len(camera_poses)
-            scene_fid = fid_metric.compute(gt_paths_for_fid, render_paths_for_fid)
-
-            tb_logger.log_scalar("Metrics/Scene/LPIPS_mean", scene_lpips, i)
-            tb_logger.log_scalar("Metrics/Scene/CLIP-Distance_mean", scene_clip_d, i)
-            tb_logger.log_scalar("Metrics/Scene/PSNR_mean", scene_psnr, i)
-            tb_logger.log_scalar("Metrics/Scene/SSIM_mean", scene_ssim, i)
-            tb_logger.log_scalar("Metrics/Scene/NIQE_mean", scene_niqe, i)
-            tb_logger.log_scalar("Metrics/Scene/BRISQUE_mean", scene_brisque, i)
-            tb_logger.log_scalar("Metrics/Scene/FID", scene_fid, i)
-
-            print(f"Scene average LPIPS: {scene_lpips}")
-            print(f"Scene average CLIP-Distance: {scene_clip_d}")
-            print(f"Scene average PSNR: {scene_psnr}")
-            print(f"Scene average SSIM: {scene_ssim}")
-            print(f"Scene average NIQE: {scene_niqe}")
-            print(f"Scene average BRISQUE: {scene_brisque}")
-            print(f"Scene FID: {scene_fid}")
+            # Aggregate and log scene-level metrics
+            scene_metrics = metrics_computer.aggregate_and_log_scene_metrics(
+                metrics_list=camera_metrics_list,
+                gt_paths=gt_paths_for_fid,
+                rendered_paths=render_paths_for_fid,
+                step=i,
+            )
 
             current_pano_rgb_name = pano_img_list[i]
             pano_json_path, pano_name = pose_json_by_image_path(
@@ -340,6 +293,13 @@ def main(cfg: DictConfig):
         lpips_metric = LpipsMetric()
         clip_metric = ClipDistanceMetric()
         fid_metric = FidMetric()
+        metrics_computer = MetricsComputer(
+            lpips_metric=lpips_metric,
+            clip_metric=clip_metric,
+            fid_metric=fid_metric,
+            depth_metric=None,
+            tb_logger=tb_logger,
+        )
         counter = 0
         dataset_path = str(cfg.dataset.path)
         for scene in os.listdir(dataset_path):
@@ -360,6 +320,7 @@ def main(cfg: DictConfig):
                 "pavillion": 50,
             }
             depth_metric = DepthMetrics(min_depth=0.0, max_depth=scene_dict[scene])
+            metrics_computer.depth_metric = depth_metric
             for scene_type in ["Egocentric", "Non-Egocentric"]:
                 if counter >= cfg.generation_iters:
                     break
@@ -409,87 +370,34 @@ def main(cfg: DictConfig):
                             rendered_pano_depth_path,
                         )
 
-                    # Panorama metrics (reference-based)
-                    pano_lpips = lpips_metric.compute(pano_rgb_path, rendered_pano_path)
-                    pano_clip_d = clip_metric.compute(pano_rgb_path, rendered_pano_path)
-                    pano_psnr, pano_ssim = compute_gt_metrics(
-                        pano_rgb_path, rendered_pano_path
+                    # Compute and log panorama metrics
+                    pano_metrics = metrics_computer.compute_and_log_panorama_metrics(
+                        gt_path=pano_rgb_path,
+                        rendered_path=rendered_pano_path,
+                        step=counter,
+                        scene_name=room_name,
                     )
-                    # Panorama metrics (reference-free)
-                    pano_niqe = compute_niqe(rendered_pano_path)
-                    pano_brisque = compute_brisque(rendered_pano_path)
 
-                    # Panorama depth metrics
-                    pano_depth_rmse = float("nan")
-                    pano_depth_abs_rel = float("nan")
-
+                    # Compute and log panorama depth metrics
                     if os.path.exists(gt_pano_depth_path) and os.path.exists(
                         rendered_pano_depth_path
                     ):
-                        try:
-                            # Load panorama depth maps in EXR (meters)
-                            gt_pano_depth = load_depth(gt_pano_depth_path)
-                            # Rendered panorama depth is in EXR (meters)
-                            render_pano_depth = load_depth(
-                                rendered_pano_depth_path,
-                                depth_scale=(
-                                    1.0 / 1000.0
-                                    if rendered_pano_depth_path.endswith(".png")
-                                    else 1.0
-                                ),
-                            )
-
-                            pano_depth_metrics = depth_metric.compute(
-                                gt_pano_depth, render_pano_depth
-                            )
-
-                            if not np.isnan(pano_depth_metrics["rmse"]):
-                                pano_depth_rmse = pano_depth_metrics["rmse"]
-                                pano_depth_abs_rel = pano_depth_metrics["abs_rel"]
-
-                                tb_logger.log_scalar(
-                                    "Metrics/Panorama/Depth_RMSE",
-                                    pano_depth_rmse,
-                                    counter,
-                                )
-                                tb_logger.log_scalar(
-                                    "Metrics/Panorama/Depth_AbsRel",
-                                    pano_depth_abs_rel,
-                                    counter,
-                                )
-                        except Exception as e:
-                            print(
-                                f"Warning: Could not compute panorama depth metrics for {room_name}: {e}"
-                            )
-
-                    tb_logger.log_scalar("Metrics/Panorama/LPIPS", pano_lpips, counter)
-                    tb_logger.log_scalar(
-                        "Metrics/Panorama/CLIP-Distance", pano_clip_d, counter
-                    )
-                    tb_logger.log_scalar("Metrics/Panorama/PSNR", pano_psnr, counter)
-                    tb_logger.log_scalar("Metrics/Panorama/SSIM", pano_ssim, counter)
-                    tb_logger.log_scalar("Metrics/Panorama/NIQE", pano_niqe, counter)
-                    tb_logger.log_scalar(
-                        "Metrics/Panorama/BRISQUE", pano_brisque, counter
-                    )
-
-                    print(f"PANO LPIPS: {pano_lpips}")
-                    print(f"PANO CLIP-Distance: {pano_clip_d}")
-                    print(f"PANO PSNR: {pano_psnr}")
-                    print(f"PANO SSIM: {pano_ssim}")
-                    print(f"PANO NIQE: {pano_niqe}")
-                    print(f"PANO BRISQUE: {pano_brisque}")
-                    if not np.isnan(pano_depth_rmse):
-                        print(f"PANO Depth RMSE: {pano_depth_rmse:.4f}")
-                        print(f"PANO Depth Abs Rel: {pano_depth_abs_rel:.4f}")
-
-                    if cfg.tensorboard.log_images:
-                        tb_logger.log_image_comparison(
-                            f"Images/Panorama/{room_name}",
-                            pano_rgb_path,
-                            rendered_pano_path,
-                            counter,
+                        pano_depth_metrics = metrics_computer.compute_and_log_panorama_depth_metrics(
+                            gt_depth_path=gt_pano_depth_path,
+                            rendered_depth_path=rendered_pano_depth_path,
+                            step=counter,
+                            scene_name=room_name,
+                            gt_depth_scale=1.0,
                         )
+
+                    # Log panorama image comparison
+                    metrics_computer.log_image_comparison(
+                        tag=f"Images/Panorama/{room_name}",
+                        gt_path=pano_rgb_path,
+                        rendered_path=rendered_pano_path,
+                        step=counter,
+                        log_images=cfg.tensorboard.log_images,
+                    )
 
                     counter += 1
         tb_logger.close()
@@ -508,6 +416,13 @@ def main(cfg: DictConfig):
         clip_metric = ClipDistanceMetric()
         fid_metric = FidMetric()
         depth_metric = DepthMetrics(min_depth=0.0, max_depth=100.0)
+        metrics_computer = MetricsComputer(
+            lpips_metric=lpips_metric,
+            clip_metric=clip_metric,
+            fid_metric=fid_metric,
+            depth_metric=depth_metric,
+            tb_logger=tb_logger,
+        )
 
         room_idx = 0
         for scene in scenes:
@@ -574,86 +489,34 @@ def main(cfg: DictConfig):
                         output_depth_path=rendered_pano_depth_path,
                     )
 
-                # Panorama metrics (reference-based)
-                pano_lpips = lpips_metric.compute(pano_rgb_path, rendered_pano_path)
-                pano_clip_d = clip_metric.compute(pano_rgb_path, rendered_pano_path)
-                pano_psnr, pano_ssim = compute_gt_metrics(
-                    pano_rgb_path, rendered_pano_path
+                # Compute and log panorama metrics
+                pano_metrics = metrics_computer.compute_and_log_panorama_metrics(
+                    gt_path=pano_rgb_path,
+                    rendered_path=rendered_pano_path,
+                    step=room_idx,
+                    scene_name=room_name,
                 )
-                # Panorama metrics (reference-free)
-                pano_niqe = compute_niqe(rendered_pano_path)
-                pano_brisque = compute_brisque(rendered_pano_path)
 
-                # Panorama depth metrics
-                pano_depth_rmse = float("nan")
-                pano_depth_abs_rel = float("nan")
-
+                # Compute and log panorama depth metrics
                 if os.path.exists(gt_pano_depth_path) and os.path.exists(
                     rendered_pano_depth_path
                 ):
-                    try:
-                        # Load panorama depth maps
-                        # Structured3D panorama depth is in millimeters (PNG uint16)
-                        gt_pano_depth = load_depth(
-                            gt_pano_depth_path, depth_scale=1.0 / 1000.0
-                        )
-                        # Rendered panorama depth is in EXR (meters)
-                        render_pano_depth = load_depth(
-                            rendered_pano_depth_path,
-                            depth_scale=(
-                                1.0 / 1000.0
-                                if rendered_pano_depth_path.endswith(".png")
-                                else 1.0
-                            ),
-                        )
-
-                        pano_depth_metrics = depth_metric.compute(
-                            gt_pano_depth, render_pano_depth
-                        )
-
-                        if not np.isnan(pano_depth_metrics["rmse"]):
-                            pano_depth_rmse = pano_depth_metrics["rmse"]
-                            pano_depth_abs_rel = pano_depth_metrics["abs_rel"]
-
-                            tb_logger.log_scalar(
-                                "Metrics/Panorama/Depth_RMSE", pano_depth_rmse, room_idx
-                            )
-                            tb_logger.log_scalar(
-                                "Metrics/Panorama/Depth_AbsRel",
-                                pano_depth_abs_rel,
-                                room_idx,
-                            )
-                    except Exception as e:
-                        print(
-                            f"Warning: Could not compute panorama depth metrics for {room_name}: {e}"
-                        )
-
-                tb_logger.log_scalar("Metrics/Panorama/LPIPS", pano_lpips, room_idx)
-                tb_logger.log_scalar(
-                    "Metrics/Panorama/CLIP-Distance", pano_clip_d, room_idx
-                )
-                tb_logger.log_scalar("Metrics/Panorama/PSNR", pano_psnr, room_idx)
-                tb_logger.log_scalar("Metrics/Panorama/SSIM", pano_ssim, room_idx)
-                tb_logger.log_scalar("Metrics/Panorama/NIQE", pano_niqe, room_idx)
-                tb_logger.log_scalar("Metrics/Panorama/BRISQUE", pano_brisque, room_idx)
-
-                print(f"PANO LPIPS: {pano_lpips}")
-                print(f"PANO CLIP-Distance: {pano_clip_d}")
-                print(f"PANO PSNR: {pano_psnr}")
-                print(f"PANO SSIM: {pano_ssim}")
-                print(f"PANO NIQE: {pano_niqe}")
-                print(f"PANO BRISQUE: {pano_brisque}")
-                if not np.isnan(pano_depth_rmse):
-                    print(f"PANO Depth RMSE: {pano_depth_rmse:.4f}")
-                    print(f"PANO Depth Abs Rel: {pano_depth_abs_rel:.4f}")
-
-                if cfg.tensorboard.log_images:
-                    tb_logger.log_image_comparison(
-                        f"Images/Panorama/{room_name}",
-                        pano_rgb_path,
-                        rendered_pano_path,
-                        room_idx,
+                    pano_depth_metrics = metrics_computer.compute_and_log_panorama_depth_metrics(
+                        gt_depth_path=gt_pano_depth_path,
+                        rendered_depth_path=rendered_pano_depth_path,
+                        step=room_idx,
+                        scene_name=room_name,
+                        gt_depth_scale=1.0 / 1000.0,
                     )
+
+                # Log panorama image comparison
+                metrics_computer.log_image_comparison(
+                    tag=f"Images/Panorama/{room_name}",
+                    gt_path=pano_rgb_path,
+                    rendered_path=rendered_pano_path,
+                    step=room_idx,
+                    log_images=cfg.tensorboard.log_images,
+                )
 
                 # Perspective views
                 if not os.path.isdir(perspective_dir):
@@ -668,19 +531,12 @@ def main(cfg: DictConfig):
                     ]
                 )
 
-                total_lpips = 0
-                total_clip_distance = 0
-                total_psnr = 0
-                total_ssim = 0
-                all_niqe = []
-                all_brisque = []
+                camera_metrics_list = []
                 gt_paths_for_fid = []
                 render_paths_for_fid = []
 
                 # Depth metrics accumulators
-                total_rmse = 0
-                total_abs_rel = 0
-                depth_count = 0
+                camera_depth_metrics_list = []
 
                 for camera_idx, view_dir in enumerate(tqdm(view_dirs)):
                     view_path = os.path.join(perspective_dir, view_dir)
@@ -708,156 +564,80 @@ def main(cfg: DictConfig):
                         output_depth_path=rendered_depth_path,
                     )
 
-                    # Camera metrics (reference-based)
-                    lpips = lpips_metric.compute(gt_image_path, rendered_camera_path)
-                    clip_distance = clip_metric.compute(
-                        gt_image_path, rendered_camera_path
+                    # Compute camera metrics
+                    camera_metrics = metrics_computer.compute_camera_metrics(
+                        gt_image_path=gt_image_path,
+                        rendered_image_path=rendered_camera_path,
                     )
-                    psnr, ssim = compute_gt_metrics(gt_image_path, rendered_camera_path)
-                    # Camera metrics (reference-free)
-                    niqe = compute_niqe(rendered_camera_path)
-                    brisque = compute_brisque(rendered_camera_path)
 
-                    # Depth metrics (if ground truth depth exists)
+                    # Log camera metrics
+                    metrics_computer.log_camera_metrics(
+                        metrics_dict=camera_metrics,
+                        scene_name=room_name,
+                        camera_idx=camera_idx,
+                    )
+
+                    # Compute and log camera depth metrics
                     if os.path.exists(gt_depth_path) and os.path.exists(
                         rendered_depth_path
                     ):
-
-                        gt_depth = load_depth(gt_depth_path, depth_scale=1.0 / 1000.0)
-                        render_depth = load_depth(
-                            rendered_depth_path,
-                            depth_scale=(
-                                1.0 / 1000.0
-                                if rendered_depth_path.endswith(".png")
-                                else 1.0
-                            ),
+                        camera_depth_metrics = metrics_computer.compute_camera_depth_metrics(
+                            gt_depth_path=gt_depth_path,
+                            rendered_depth_path=rendered_depth_path,
+                            gt_depth_scale=1.0 / 1000.0,
                         )
-
-                        depth_metrics = depth_metric.compute(gt_depth, render_depth)
-
-                        if not np.isnan(depth_metrics["rmse"]):
-                            tb_logger.log_scalar(
-                                f"Metrics/Camera_{room_name}/Depth_RMSE",
-                                depth_metrics["rmse"],
-                                camera_idx,
+                        if camera_depth_metrics:
+                            metrics_computer.log_camera_depth_metrics(
+                                depth_metrics=camera_depth_metrics,
+                                scene_name=room_name,
+                                camera_idx=camera_idx,
                             )
-                            tb_logger.log_scalar(
-                                f"Metrics/Camera_{room_name}/Depth_AbsRel",
-                                depth_metrics["abs_rel"],
-                                camera_idx,
-                            )
+                            camera_depth_metrics_list.append(camera_depth_metrics)
 
-                            total_rmse += depth_metrics["rmse"]
-                            total_abs_rel += depth_metrics["abs_rel"]
-                            depth_count += 1
-
-                    tb_logger.log_scalar(
-                        f"Metrics/Camera_{room_name}/LPIPS",
-                        lpips,
-                        camera_idx,
-                    )
-                    tb_logger.log_scalar(
-                        f"Metrics/Camera_{room_name}/CLIP-Distance",
-                        clip_distance,
-                        camera_idx,
-                    )
-                    tb_logger.log_scalar(
-                        f"Metrics/Camera_{room_name}/PSNR",
-                        psnr,
-                        camera_idx,
-                    )
-                    tb_logger.log_scalar(
-                        f"Metrics/Camera_{room_name}/SSIM",
-                        ssim,
-                        camera_idx,
-                    )
-                    tb_logger.log_scalar(
-                        f"Metrics/Camera_{room_name}/NIQE",
-                        niqe,
-                        camera_idx,
-                    )
-                    tb_logger.log_scalar(
-                        f"Metrics/Camera_{room_name}/BRISQUE",
-                        brisque,
-                        camera_idx,
+                    # Log camera image comparison
+                    metrics_computer.log_image_comparison(
+                        tag=f"Images/Camera/{room_name}_{view_dir}",
+                        gt_path=gt_image_path,
+                        rendered_path=rendered_camera_path,
+                        step=room_idx,
+                        log_images=(
+                            cfg.tensorboard.log_images
+                            and camera_idx < cfg.tensorboard.max_images_per_scene
+                        ),
                     )
 
-                    if (
-                        cfg.tensorboard.log_images
-                        and camera_idx < cfg.tensorboard.max_images_per_scene
-                    ):
-                        tb_logger.log_image_comparison(
-                            f"Images/Camera/{room_name}_{view_dir}",
-                            gt_image_path,
-                            rendered_camera_path,
-                            room_idx,
-                        )
-
-                    total_lpips += lpips
-                    total_clip_distance += clip_distance
-                    total_psnr += psnr
-                    total_ssim += ssim
-                    all_niqe.append(niqe)
-                    all_brisque.append(brisque)
+                    # Collect metrics for scene aggregation
+                    camera_metrics_list.append(camera_metrics)
                     gt_paths_for_fid.append(gt_image_path)
                     render_paths_for_fid.append(rendered_camera_path)
 
-                num_views = len(gt_paths_for_fid)
-                if num_views > 0:
-                    scene_lpips = total_lpips / num_views
-                    scene_clip_d = total_clip_distance / num_views
-                    scene_psnr = total_psnr / num_views
-                    scene_ssim = total_ssim / num_views
-                    scene_niqe = float(np.nanmean(all_niqe))
-                    scene_brisque = float(np.nanmean(all_brisque))
-                    scene_fid = fid_metric.compute(
-                        gt_paths_for_fid, render_paths_for_fid
+                # Aggregate and log scene-level metrics
+                if len(camera_metrics_list) > 0:
+                    scene_metrics = metrics_computer.aggregate_and_log_scene_metrics(
+                        metrics_list=camera_metrics_list,
+                        gt_paths=gt_paths_for_fid,
+                        rendered_paths=render_paths_for_fid,
+                        step=room_idx,
                     )
 
-                    tb_logger.log_scalar(
-                        "Metrics/Scene/LPIPS_mean", scene_lpips, room_idx
-                    )
-                    tb_logger.log_scalar(
-                        "Metrics/Scene/CLIP-Distance_mean",
-                        scene_clip_d,
-                        room_idx,
-                    )
-                    tb_logger.log_scalar(
-                        "Metrics/Scene/PSNR_mean", scene_psnr, room_idx
-                    )
-                    tb_logger.log_scalar(
-                        "Metrics/Scene/SSIM_mean", scene_ssim, room_idx
-                    )
-                    tb_logger.log_scalar(
-                        "Metrics/Scene/NIQE_mean", scene_niqe, room_idx
-                    )
-                    tb_logger.log_scalar(
-                        "Metrics/Scene/BRISQUE_mean", scene_brisque, room_idx
-                    )
-                    tb_logger.log_scalar("Metrics/Scene/FID", scene_fid, room_idx)
+                    # Log scene depth metrics
+                    if len(camera_depth_metrics_list) > 0:
+                        scene_rmse = sum(m["rmse"] for m in camera_depth_metrics_list) / len(
+                            camera_depth_metrics_list
+                        )
+                        scene_abs_rel = sum(
+                            m["abs_rel"] for m in camera_depth_metrics_list
+                        ) / len(camera_depth_metrics_list)
 
-                    # Log depth metrics
-                    if depth_count > 0:
-                        scene_rmse = total_rmse / depth_count
-                        scene_abs_rel = total_abs_rel / depth_count
-
-                        tb_logger.log_scalar(
+                        metrics_computer.tb_logger.log_scalar(
                             "Metrics/Scene/Depth_RMSE_mean", scene_rmse, room_idx
                         )
-                        tb_logger.log_scalar(
+                        metrics_computer.tb_logger.log_scalar(
                             "Metrics/Scene/Depth_AbsRel_mean", scene_abs_rel, room_idx
                         )
 
                         print(f"Scene average Depth RMSE: {scene_rmse:.4f}")
                         print(f"Scene average Depth Abs Rel: {scene_abs_rel:.4f}")
-
-                    print(f"Scene average LPIPS: {scene_lpips}")
-                    print(f"Scene average CLIP-Distance: {scene_clip_d}")
-                    print(f"Scene average PSNR: {scene_psnr}")
-                    print(f"Scene average SSIM: {scene_ssim}")
-                    print(f"Scene average NIQE: {scene_niqe}")
-                    print(f"Scene average BRISQUE: {scene_brisque}")
-                    print(f"Scene FID: {scene_fid}")
 
                 room_idx += 1
 
