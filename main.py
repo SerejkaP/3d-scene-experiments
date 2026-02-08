@@ -343,11 +343,30 @@ def main(cfg: DictConfig):
         counter = 0
         dataset_path = str(cfg.dataset.path)
         for scene in os.listdir(dataset_path):
+            if counter >= cfg.generation_iters:
+                break
+            scene_dict = {
+                "barbershop": 10,
+                "archiviz-flat": 20,
+                "bistro": 50,
+                "classroom": 15,
+                "emerald-square": 70,
+                "fisher-hut": 70,
+                "lone-monk": 25,
+                "restroom": 20,
+                "san-miguel": 20,
+                "sponza": 20,
+                "sun_temple": 20,
+                "pavillion": 50,
+            }
+            depth_metric = DepthMetrics(min_depth=0.0, max_depth=scene_dict[scene])
             for scene_type in ["Egocentric", "Non-Egocentric"]:
+                if counter >= cfg.generation_iters:
+                    break
                 # cameras/, depth/, images/, normals/, sparse/, test.txt, train.txt
                 scene_path = os.path.join(dataset_path, scene, scene_type)
                 images_path = os.path.join(scene_path, "images")
-                depth_path = os.path.join(scene_path, "depth")
+                depth_path = os.path.join(scene_path, "depths")
                 test_data = []
                 with open(os.path.join(scene_path, "test.txt"), "r") as f:
                     test_data = [int(line.strip()) for line in f.readlines()]
@@ -408,11 +427,8 @@ def main(cfg: DictConfig):
                         rendered_pano_depth_path
                     ):
                         try:
-                            # Load panorama depth maps
-                            # Structured3D panorama depth is in millimeters (PNG uint16)
-                            gt_pano_depth = load_depth(
-                                gt_pano_depth_path, depth_scale=1.0 / 1000.0
-                            )
+                            # Load panorama depth maps in EXR (meters)
+                            gt_pano_depth = load_depth(gt_pano_depth_path)
                             # Rendered panorama depth is in EXR (meters)
                             render_pano_depth = load_depth(
                                 rendered_pano_depth_path,
