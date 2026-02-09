@@ -211,7 +211,9 @@ def render_cubemap(
     return results
 
 
-def _faces_to_pano(faces: dict, output_path: str, is_depth: bool = False):
+def _faces_to_pano(
+    faces: dict, output_path: str, width: int = 4096, is_depth: bool = False
+):
     faces_view = [
         faces["front"],
         faces["right"],
@@ -221,10 +223,11 @@ def _faces_to_pano(faces: dict, output_path: str, is_depth: bool = False):
         faces["bottom"],
     ]
 
+    height = width // 2
     if is_depth:
         # For depth maps, use float32 conversion
         equi_img = py360convert.c2e(
-            faces_view, 2048, 4096, cube_format="list", mode="bilinear"
+            faces_view, height, width, cube_format="list", mode="bilinear"
         )
         # Save as EXR or PNG based on extension
         if output_path.lower().endswith(".exr"):
@@ -237,7 +240,7 @@ def _faces_to_pano(faces: dict, output_path: str, is_depth: bool = False):
             cv2.imwrite(output_path, depth_mm)
     else:
         # For RGB images
-        equi_img = py360convert.c2e(faces_view, 2048, 4096, cube_format="list")
+        equi_img = py360convert.c2e(faces_view, height, width, cube_format="list")
         cv2.imwrite(output_path, equi_img)
 
 
@@ -255,12 +258,12 @@ def render_pano(
 
     # Convert RGB faces to panorama
     rgb_faces = {k: v for k, v in result.items() if k != "depth_faces"}
-    _faces_to_pano(rgb_faces, output_path, is_depth=False)
+    _faces_to_pano(rgb_faces, output_path, size, is_depth=False)
 
     # Convert depth faces to panorama if requested
     depth_pano = None
     if render_depth and "depth_faces" in result:
-        _faces_to_pano(result["depth_faces"], output_depth_path, is_depth=True)
+        _faces_to_pano(result["depth_faces"], output_depth_path, size, is_depth=True)
 
         # Load the saved depth for return
         depth_pano = load_depth(output_depth_path, depth_scale=1.0)

@@ -9,17 +9,9 @@ from utils.worldgen_utils import worldgen_generate
 from utils.dataset_2d3ds_utils import pose_json_by_image_path
 from utils.metrics import (
     ClipDistanceMetric,
-    compute_gt_metrics,
     LpipsMetric,
-    compute_brisque,
-    compute_niqe,
     FidMetric,
     DepthMetrics,
-)
-from utils.ob3d_utils.eval_nvs import calculate_metrics
-from utils.ob3d_utils.eval_depth import (
-    calculate_rmse,
-    calculate_abs_relative_difference,
 )
 from utils.tensorboard_logger import TensorBoardLogger
 from utils.metrics_computer import MetricsComputer
@@ -134,27 +126,6 @@ def main(cfg: DictConfig):
     save_path = os.path.join(cfg.save_path, cfg.model.name, cfg.dataset.name)
     os.makedirs(save_path, exist_ok=True)
     if cfg.dataset.name == "2d3ds":
-        pano_path = os.path.join(cfg.dataset.path, "pano")
-        pano_pose = os.path.join(pano_path, "pose")
-        pano_images = os.path.join(pano_path, "rgb")
-
-        data_path = os.path.join(cfg.dataset.path, "data")
-        data_pose = os.path.join(data_path, "pose")
-        data_images = os.path.join(data_path, "rgb")
-        pano_img_list = [
-            img_name
-            for img_name in os.listdir(pano_images)
-            if img_name.endswith(".png")
-        ]
-        if len(pano_img_list) == 0:
-            raise Exception("No images in directory!!!")
-
-        current_pano_rgb_name = pano_img_list[0]
-
-        pano_json_path, pano_name = pose_json_by_image_path(
-            current_pano_rgb_name, pano_pose
-        )
-
         tb_logger = TensorBoardLogger(
             log_dir=cfg.tensorboard.log_dir or save_path,
             enabled=cfg.tensorboard.enabled,
@@ -171,116 +142,139 @@ def main(cfg: DictConfig):
             depth_metric=None,
             tb_logger=tb_logger,
         )
+        dataset_path = str(cfg.dataset.path)
+        areas = sorted([s for s in os.listdir(dataset_path) if s.startswith("area_")])
+        counter = 0
+        for area in areas:
+            if counter >= cfg.generation_iters:
+                break
+            area_path = os.path.join(cfg.dataset.path, area)
+            pano_path = os.path.join(area_path, "pano")
+            pano_pose = os.path.join(pano_path, "pose")
+            pano_images = os.path.join(pano_path, "rgb")
 
-        num_iters = min(cfg.generation_iters, len(pano_img_list))
-        for i in range(num_iters):
-            current_pano_rgb_path = os.path.join(pano_images, current_pano_rgb_name)
-            rendered_pano_path = os.path.join(save_path, f"{pano_name}_pano.png")
-            ply_render_path = os.path.join(save_path, f"{pano_name}_render.ply")
-
-            if cfg.generate:
-                print(f"Generate scene for {current_pano_rgb_name}")
-                # Generation time metric
-                generation_time = create_gs(
-                    cfg.model.name, current_pano_rgb_path, ply_render_path
-                )
-                tb_logger.log_scalar(
-                    "Performance/generation_time_seconds", generation_time, i
-                )
-                print("Generation time: ", generation_time)
-
-                render_pano(
-                    ply_render_path,
-                    [0, 0, 0],
-                    cfg.dataset.pano_width,
-                    rendered_pano_path,
-                )
-
-            # Compute and log panorama metrics
-            pano_metrics = metrics_computer.compute_and_log_panorama_metrics(
-                gt_path=current_pano_rgb_path,
-                rendered_path=rendered_pano_path,
-                step=i,
-                scene_name=pano_name,
-            )
-
-            # Log panorama image comparison
-            metrics_computer.log_image_comparison(
-                tag=f"Images/Panorama/{pano_name}",
-                gt_path=current_pano_rgb_path,
-                rendered_path=rendered_pano_path,
-                step=i,
-                log_images=cfg.tensorboard.log_images,
-            )
-
-            camera_poses = [
-                camera_json
-                for camera_json in os.listdir(data_pose)
-                if camera_json.startswith(f"{pano_name}_")
+            data_path = os.path.join(area_path, "data")
+            data_pose = os.path.join(data_path, "pose")
+            data_images = os.path.join(data_path, "rgb")
+            pano_img_list = [
+                img_name
+                for img_name in os.listdir(pano_images)
+                if img_name.endswith(".png")
             ]
+            if len(pano_img_list) == 0:
+                raise Exception("No images in directory!!!")
 
-            camera_metrics_list = []
-            gt_paths_for_fid = []
-            render_paths_for_fid = []
-            for camera_idx, camera_pose in enumerate(tqdm(camera_poses)):
-                camera_json_path = os.path.join(data_pose, camera_pose)
-                rendered_camera_subname = "_".join(camera_pose.split("_")[:-1])
-                rendered_camera = f"{rendered_camera_subname}_render.png"
-                rendered_camera_path = os.path.join(save_path, rendered_camera)
-
-                render_2d3ds(
-                    ply_render_path,
-                    pano_json_path,
-                    camera_json_path,
-                    rendered_camera_path,
+            for current_pano_rgb_name in pano_img_list:
+                if counter >= cfg.generation_iters:
+                    break
+                pano_json_path, pano_name = pose_json_by_image_path(
+                    current_pano_rgb_name, pano_pose
                 )
+                current_pano_rgb_path = os.path.join(pano_images, current_pano_rgb_name)
+                rendered_pano_path = os.path.join(save_path, f"{pano_name}_pano.png")
+                ply_render_path = os.path.join(save_path, f"{pano_name}_render.ply")
 
-                gt_image_path = os.path.join(
-                    data_images, f"{rendered_camera_subname}_rgb.png"
-                )
+                if cfg.generate:
+                    print(f"Generate scene for {current_pano_rgb_name}")
+                    # Generation time metric
+                    generation_time = create_gs(
+                        cfg.model.name, current_pano_rgb_path, ply_render_path
+                    )
+                    tb_logger.log_scalar(
+                        "Performance/generation_time_seconds", generation_time, counter
+                    )
+                    print("Generation time: ", generation_time)
 
-                # Compute camera metrics
-                camera_metrics = metrics_computer.compute_camera_metrics(
-                    gt_image_path=gt_image_path,
-                    rendered_image_path=rendered_camera_path,
-                )
+                    render_pano(
+                        ply_render_path,
+                        [0, 0, 0],
+                        cfg.dataset.pano_width,
+                        rendered_pano_path,
+                    )
 
-                # Log camera metrics
-                metrics_computer.log_camera_metrics(
-                    metrics_dict=camera_metrics,
+                # Compute and log panorama metrics
+                pano_metrics = metrics_computer.compute_and_log_panorama_metrics(
+                    gt_path=current_pano_rgb_path,
+                    rendered_path=rendered_pano_path,
+                    step=counter,
                     scene_name=pano_name,
-                    camera_idx=camera_idx,
                 )
 
-                # Log camera image comparison
+                # Log panorama image comparison
                 metrics_computer.log_image_comparison(
-                    tag=f"Images/Camera/{rendered_camera_subname}",
-                    gt_path=gt_image_path,
-                    rendered_path=rendered_camera_path,
-                    step=i,
-                    log_images=(
-                        cfg.tensorboard.log_images
-                        and camera_idx < cfg.tensorboard.max_images_per_scene
-                    ),
+                    tag=f"Images/Panorama/{pano_name}",
+                    gt_path=current_pano_rgb_path,
+                    rendered_path=rendered_pano_path,
+                    step=counter,
+                    log_images=cfg.tensorboard.log_images,
                 )
 
-                # Collect metrics for scene aggregation
-                camera_metrics_list.append(camera_metrics)
-                gt_paths_for_fid.append(gt_image_path)
-                render_paths_for_fid.append(rendered_camera_path)
+                camera_poses = [
+                    camera_json
+                    for camera_json in os.listdir(data_pose)
+                    if camera_json.startswith(f"{pano_name}_")
+                ]
 
-            # Aggregate and log scene-level metrics
-            scene_metrics = metrics_computer.aggregate_and_log_scene_metrics(
-                metrics_list=camera_metrics_list,
-                gt_paths=gt_paths_for_fid,
-                rendered_paths=render_paths_for_fid,
-                step=i,
-            )
+                camera_metrics_list = []
+                gt_paths_for_fid = []
+                render_paths_for_fid = []
+                for camera_idx, camera_pose in enumerate(tqdm(camera_poses)):
+                    camera_json_path = os.path.join(data_pose, camera_pose)
+                    rendered_camera_subname = "_".join(camera_pose.split("_")[:-1])
+                    rendered_camera = f"{rendered_camera_subname}_render.png"
+                    rendered_camera_path = os.path.join(save_path, rendered_camera)
 
-            current_pano_rgb_name = pano_img_list[i]
-            pano_json_path, pano_name = pose_json_by_image_path(
-                current_pano_rgb_name, pano_pose
-            )
+                    render_2d3ds(
+                        ply_render_path,
+                        pano_json_path,
+                        camera_json_path,
+                        rendered_camera_path,
+                    )
+
+                    gt_image_path = os.path.join(
+                        data_images, f"{rendered_camera_subname}_rgb.png"
+                    )
+
+                    # Compute camera metrics
+                    camera_metrics = metrics_computer.compute_camera_metrics(
+                        gt_image_path=gt_image_path,
+                        rendered_image_path=rendered_camera_path,
+                    )
+
+                    # Log camera metrics
+                    metrics_computer.log_camera_metrics(
+                        metrics_dict=camera_metrics,
+                        scene_name=pano_name,
+                        camera_idx=camera_idx,
+                    )
+
+                    # Log camera image comparison
+                    metrics_computer.log_image_comparison(
+                        tag=f"Images/Camera/{rendered_camera_subname}",
+                        gt_path=gt_image_path,
+                        rendered_path=rendered_camera_path,
+                        step=counter,
+                        log_images=(
+                            cfg.tensorboard.log_images
+                            and camera_idx < cfg.tensorboard.max_images_per_scene
+                        ),
+                    )
+
+                    # Collect metrics for scene aggregation
+                    camera_metrics_list.append(camera_metrics)
+                    gt_paths_for_fid.append(gt_image_path)
+                    render_paths_for_fid.append(rendered_camera_path)
+
+                # Aggregate and log scene-level metrics
+                scene_metrics = metrics_computer.aggregate_and_log_scene_metrics(
+                    metrics_list=camera_metrics_list,
+                    gt_paths=gt_paths_for_fid,
+                    rendered_paths=render_paths_for_fid,
+                    step=counter,
+                )
+
+                counter += 1
+
         tb_logger.close()
 
     elif cfg.dataset.name == "ob3d":
@@ -342,7 +336,7 @@ def main(cfg: DictConfig):
                         save_path, scene, scene_type, f"{t_scene}_depth.exr"
                     )
                     ply_render_path = os.path.join(
-                        save_path, f"{scene}_{scene_type}_{t_scene}_render.ply"
+                        save_path, scene, scene_type, f"{t_scene}_render.ply"
                     )
                     pano_rgb_path = os.path.join(images_path, f"{t_scene}_rgb.png")
                     gt_pano_depth_path = os.path.join(
@@ -382,12 +376,14 @@ def main(cfg: DictConfig):
                     if os.path.exists(gt_pano_depth_path) and os.path.exists(
                         rendered_pano_depth_path
                     ):
-                        pano_depth_metrics = metrics_computer.compute_and_log_panorama_depth_metrics(
-                            gt_depth_path=gt_pano_depth_path,
-                            rendered_depth_path=rendered_pano_depth_path,
-                            step=counter,
-                            scene_name=room_name,
-                            gt_depth_scale=1.0,
+                        pano_depth_metrics = (
+                            metrics_computer.compute_and_log_panorama_depth_metrics(
+                                gt_depth_path=gt_pano_depth_path,
+                                rendered_depth_path=rendered_pano_depth_path,
+                                step=counter,
+                                scene_name=room_name,
+                                gt_depth_scale=1.0,
+                            )
                         )
 
                     # Log panorama image comparison
@@ -501,12 +497,14 @@ def main(cfg: DictConfig):
                 if os.path.exists(gt_pano_depth_path) and os.path.exists(
                     rendered_pano_depth_path
                 ):
-                    pano_depth_metrics = metrics_computer.compute_and_log_panorama_depth_metrics(
-                        gt_depth_path=gt_pano_depth_path,
-                        rendered_depth_path=rendered_pano_depth_path,
-                        step=room_idx,
-                        scene_name=room_name,
-                        gt_depth_scale=1.0 / 1000.0,
+                    pano_depth_metrics = (
+                        metrics_computer.compute_and_log_panorama_depth_metrics(
+                            gt_depth_path=gt_pano_depth_path,
+                            rendered_depth_path=rendered_pano_depth_path,
+                            step=room_idx,
+                            scene_name=room_name,
+                            gt_depth_scale=1.0 / 1000.0,
+                        )
                     )
 
                 # Log panorama image comparison
@@ -581,10 +579,12 @@ def main(cfg: DictConfig):
                     if os.path.exists(gt_depth_path) and os.path.exists(
                         rendered_depth_path
                     ):
-                        camera_depth_metrics = metrics_computer.compute_camera_depth_metrics(
-                            gt_depth_path=gt_depth_path,
-                            rendered_depth_path=rendered_depth_path,
-                            gt_depth_scale=1.0 / 1000.0,
+                        camera_depth_metrics = (
+                            metrics_computer.compute_camera_depth_metrics(
+                                gt_depth_path=gt_depth_path,
+                                rendered_depth_path=rendered_depth_path,
+                                gt_depth_scale=1.0 / 1000.0,
+                            )
                         )
                         if camera_depth_metrics:
                             metrics_computer.log_camera_depth_metrics(
@@ -622,9 +622,9 @@ def main(cfg: DictConfig):
 
                     # Log scene depth metrics
                     if len(camera_depth_metrics_list) > 0:
-                        scene_rmse = sum(m["rmse"] for m in camera_depth_metrics_list) / len(
-                            camera_depth_metrics_list
-                        )
+                        scene_rmse = sum(
+                            m["rmse"] for m in camera_depth_metrics_list
+                        ) / len(camera_depth_metrics_list)
                         scene_abs_rel = sum(
                             m["abs_rel"] for m in camera_depth_metrics_list
                         ) / len(camera_depth_metrics_list)
