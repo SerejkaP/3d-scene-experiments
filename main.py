@@ -171,8 +171,10 @@ def main(cfg: DictConfig):
                     current_pano_rgb_name, pano_pose
                 )
                 current_pano_rgb_path = os.path.join(pano_images, current_pano_rgb_name)
-                rendered_pano_path = os.path.join(save_path, f"{pano_name}_pano.png")
-                ply_render_path = os.path.join(save_path, f"{pano_name}_render.ply")
+                area_path = os.path.join(save_path, area)
+                os.makedirs(area_path, exist_ok=True)
+                rendered_pano_path = os.path.join(area_path, f"{pano_name}_pano.png")
+                ply_render_path = os.path.join(area_path, f"{pano_name}_render.ply")
 
                 if cfg.generate:
                     print(f"Generate scene for {current_pano_rgb_name}")
@@ -222,7 +224,7 @@ def main(cfg: DictConfig):
                     camera_json_path = os.path.join(data_pose, camera_pose)
                     rendered_camera_subname = "_".join(camera_pose.split("_")[:-1])
                     rendered_camera = f"{rendered_camera_subname}_render.png"
-                    rendered_camera_path = os.path.join(save_path, rendered_camera)
+                    rendered_camera_path = os.path.join(area_path, rendered_camera)
 
                     render_2d3ds(
                         ply_render_path,
@@ -320,6 +322,10 @@ def main(cfg: DictConfig):
                     break
                 # cameras/, depth/, images/, normals/, sparse/, test.txt, train.txt
                 scene_path = os.path.join(dataset_path, scene, scene_type)
+
+                save_scene_path = os.path.join(save_path, scene, scene_type)
+                os.makedirs(save_scene_path, exist_ok=True)
+
                 images_path = os.path.join(scene_path, "images")
                 depth_path = os.path.join(scene_path, "depths")
                 test_data = []
@@ -330,13 +336,13 @@ def main(cfg: DictConfig):
                         break
                     t_scene = f"{str(t).zfill(5)}"
                     rendered_pano_path = os.path.join(
-                        save_path, scene, scene_type, f"{t_scene}_pano.png"
+                        save_scene_path, f"{t_scene}_pano.png"
                     )
                     rendered_pano_depth_path = os.path.join(
-                        save_path, scene, scene_type, f"{t_scene}_depth.exr"
+                        save_scene_path, f"{t_scene}_depth.exr"
                     )
                     ply_render_path = os.path.join(
-                        save_path, scene, scene_type, f"{t_scene}_render.ply"
+                        save_scene_path, f"{t_scene}_render.ply"
                     )
                     pano_rgb_path = os.path.join(images_path, f"{t_scene}_rgb.png")
                     gt_pano_depth_path = os.path.join(

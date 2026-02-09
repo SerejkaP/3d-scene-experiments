@@ -1,5 +1,5 @@
 name: 2d3ds
 path: "/mnt/d/datasets/2D-3D-Semantics"
-pano_width: 4026
+pano_width: 4096
 pano_height: 2048
 tile_size: 1080
