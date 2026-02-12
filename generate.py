@@ -1,0 +1,182 @@
+import os
+import hydra
+from omegaconf import DictConfig, OmegaConf
+from main import create_gs
+from utils.tensorboard_logger import TensorBoardLogger
+
+
+def process_2d3ds(cfg, save_path, tb_logger: TensorBoardLogger):
+    dataset_path = str(cfg.dataset.path)
+    areas = sorted([s for s in os.listdir(dataset_path) if s.startswith("area_")])
+    generation_times = []
+    counter = 0
+    for area in areas:
+        if counter >= cfg.generation_iters:
+            break
+        pano_images = os.path.join(dataset_path, area, "pano", "rgb")
+        pano_img_list = [img for img in os.listdir(pano_images) if img.endswith(".png")]
+        if len(pano_img_list) == 0:
+            raise Exception("No images in directory!!!")
+
+        for pano_name in pano_img_list:
+            if counter >= cfg.generation_iters:
+                break
+            pano_rgb_path = os.path.join(pano_images, pano_name)
+            scene_name = os.path.splitext(pano_name)[0]
+            area_save_path = os.path.join(save_path, area)
+            os.makedirs(area_save_path, exist_ok=True)
+            ply_path = os.path.join(area_save_path, f"{scene_name}_render.ply")
+
+            print(f"[2d3ds] Generate scene for {pano_name}")
+            generation_time = create_gs(cfg.model.name, pano_rgb_path, ply_path)
+            tb_logger.log_scalar(
+                "Performance/generation_time_seconds", generation_time, counter
+            )
+            print(f"Generation time: {generation_time}")
+            generation_times.append(generation_time)
+            counter += 1
+
+    return generation_times
+
+
+def process_ob3d(cfg, save_path, tb_logger: TensorBoardLogger):
+    dataset_path = str(cfg.dataset.path)
+    generation_times = []
+    counter = 0
+    for scene in os.listdir(dataset_path):
+        if counter >= cfg.generation_iters:
+            break
+        for scene_type in ["Egocentric", "Non-Egocentric"]:
+            if counter >= cfg.generation_iters:
+                break
+            scene_path = os.path.join(dataset_path, scene, scene_type)
+            images_path = os.path.join(scene_path, "images")
+            test_file = os.path.join(scene_path, "test.txt")
+            if not os.path.exists(test_file):
+                continue
+            with open(test_file, "r") as f:
+                test_data = [int(line.strip()) for line in f.readlines()]
+
+            save_scene_path = os.path.join(save_path, scene, scene_type)
+            os.makedirs(save_scene_path, exist_ok=True)
+
+            for t in test_data:
+                if counter >= cfg.generation_iters:
+                    break
+                t_scene = f"{str(t).zfill(5)}"
+                pano_rgb_path = os.path.join(images_path, f"{t_scene}_rgb.png")
+                ply_path = os.path.join(save_scene_path, f"{t_scene}_render.ply")
+
+                print(f"[ob3d] Generate scene for {scene}/{scene_type}/{t_scene}")
+                generation_time = create_gs(cfg.model.name, pano_rgb_path, ply_path)
+                tb_logger.log_scalar(
+                    "Performance/generation_time_seconds", generation_time, counter
+                )
+                print(f"Generation time: {generation_time}")
+                generation_times.append(generation_time)
+                counter += 1
+
+    return generation_times
+
+
+def process_structured3d(cfg, save_path, tb_logger: TensorBoardLogger):
+    dataset_path = str(cfg.dataset.path)
+    scenes = sorted([s for s in os.listdir(dataset_path) if s.startswith("scene_")])
+    generation_times = []
+    counter = 0
+    for scene in scenes:
+        if counter >= cfg.generation_iters:
+            break
+        rendering_path = os.path.join(dataset_path, scene, "2D_rendering")
+        if not os.path.isdir(rendering_path):
+            continue
+        rooms = sorted(os.listdir(rendering_path))
+        for room in rooms:
+            if counter >= cfg.generation_iters:
+                break
+            panorama_dir = os.path.join(rendering_path, room, "panorama")
+            pano_rgb_path = os.path.join(panorama_dir, "full", "rgb_rawlight.png")
+            if not os.path.exists(pano_rgb_path):
+                print(f"Skipping {scene}/{room}: missing panorama")
+                continue
+
+            room_save_path = os.path.join(save_path, scene, room)
+            os.makedirs(room_save_path, exist_ok=True)
+            ply_path = os.path.join(room_save_path, "scene.ply")
+
+            room_name = f"{scene}_{room}"
+            print(f"[structured3d] Generate scene for {room_name}")
+            generation_time = create_gs(cfg.model.name, pano_rgb_path, ply_path)
+            tb_logger.log_scalar(
+                "Performance/generation_time_seconds", generation_time, counter
+            )
+            print(f"Generation time: {generation_time}")
+            generation_times.append(generation_time)
+            counter += 1
+
+    return generation_times
+
+
+DATASET_PROCESSORS = {
+    "2d3ds": process_2d3ds,
+    "ob3d": process_ob3d,
+    "structured3d": process_structured3d,
+}
+
+
+@hydra.main(config_path="conf", config_name="config", version_base=None)
+def generate(cfg: DictConfig):
+    conf_dir = os.path.join(hydra.utils.get_original_cwd(), "conf", "dataset")
+    dataset_files = sorted(
+        [f[:-5] for f in os.listdir(conf_dir) if f.endswith(".yaml")]
+    )
+
+    tb_logger = TensorBoardLogger(
+        log_dir=cfg.tensorboard.log_dir,
+        enabled=cfg.tensorboard.enabled,
+        flush_secs=cfg.tensorboard.flush_secs,
+        max_image_size=2048,
+    )
+
+    all_times = []
+
+    for dataset_name in dataset_files:
+        print(f"\n{'='*60}")
+        print(f"Processing dataset: {dataset_name}")
+        print(f"{'='*60}\n")
+
+        dataset_cfg = OmegaConf.load(os.path.join(conf_dir, f"{dataset_name}.yaml"))
+        run_cfg = OmegaConf.merge(cfg, {"dataset": dataset_cfg})
+
+        save_path = os.path.join(cfg.save_path, cfg.model.name, dataset_name)
+        os.makedirs(save_path, exist_ok=True)
+
+        processor = DATASET_PROCESSORS.get(dataset_name)
+        if processor:
+            dataset_times = processor(run_cfg, save_path, tb_logger)
+            if dataset_times:
+                avg = sum(dataset_times) / len(dataset_times)
+                print(
+                    f"\n[{dataset_name}] Average generation time: {avg:.2f}s ({len(dataset_times)} scenes)"
+                )
+                tb_logger.log_scalar(
+                    f"Performance/{dataset_name}/avg_generation_time", avg, 0
+                )
+                all_times.extend(dataset_times)
+        else:
+            print(f"Unknown dataset: {dataset_name}, skipping")
+
+    if all_times:
+        total_avg = sum(all_times) / len(all_times)
+        print(f"\n{'='*60}")
+        print(
+            f"Overall average generation time: {total_avg:.2f}s ({len(all_times)} scenes)"
+        )
+        print(f"{'='*60}")
+        tb_logger.log_scalar("Performance/overall_avg_generation_time", total_avg, 0)
+
+    tb_logger.close()
+
+
+if __name__ == "__main__":
+    generate()
