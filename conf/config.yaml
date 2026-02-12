@@ -14,6 +14,13 @@ tensorboard:
   log_images: true
   max_images_per_scene: 5
 
+# wandb:
+#   enabled: true
+#   log_dir: null
+#   project: "3d-generation"
+#   log_images: true
+#   max_images_per_scene: 5
+
 hydra:
   run:
     dir: outputs/${now:%Y-%m-%d_%H-%M-%S}
