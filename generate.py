@@ -40,10 +40,18 @@ def process_2d3ds(cfg, save_path, tb_logger: TensorBoardLogger):
 
 
 def process_ob3d(cfg, save_path, tb_logger: TensorBoardLogger):
+    avail_scenes = [
+        "archiviz-flat",
+        "barbershop",
+        "classroom",
+        "restroom",
+        "san-miguel",
+        "sun-temple",
+    ]
     dataset_path = str(cfg.dataset.path)
     generation_times = []
     counter = 0
-    for scene in os.listdir(dataset_path):
+    for scene in avail_scenes:
         if counter >= cfg.generation_iters:
             break
         for scene_type in ["Egocentric", "Non-Egocentric"]:
