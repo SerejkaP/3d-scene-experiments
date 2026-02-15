@@ -5,6 +5,7 @@ defaults:
 
 generation_iters: 1
 save_path: /mnt/e/3D/experiments/output
+splits_path: /mnt/e/3D/experiments/splits
 generate: true
 
 tensorboard:

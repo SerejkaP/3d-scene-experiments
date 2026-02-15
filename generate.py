@@ -3,10 +3,12 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 from main import create_gs
 from utils.tensorboard_logger import TensorBoardLogger
+from utils.splits import load_split, filter_2d3ds_panos, filter_structured3d_rooms
 
 
 def process_2d3ds(cfg, save_path, tb_logger: TensorBoardLogger):
     dataset_path = str(cfg.dataset.path)
+    split_entries = load_split(str(cfg.splits_path), "2d3ds")
     areas = sorted([s for s in os.listdir(dataset_path) if s.startswith("area_")])
     generation_times = []
     counter = 0
@@ -14,9 +16,10 @@ def process_2d3ds(cfg, save_path, tb_logger: TensorBoardLogger):
         if counter >= cfg.generation_iters:
             break
         pano_images = os.path.join(dataset_path, area, "pano", "rgb")
-        pano_img_list = [img for img in os.listdir(pano_images) if img.endswith(".png")]
+        pano_img_list = sorted([img for img in os.listdir(pano_images) if img.endswith(".png")])
+        pano_img_list = filter_2d3ds_panos(pano_img_list, area, split_entries)
         if len(pano_img_list) == 0:
-            raise Exception("No images in directory!!!")
+            continue
 
         for pano_name in pano_img_list:
             if counter >= cfg.generation_iters:
@@ -89,6 +92,7 @@ def process_ob3d(cfg, save_path, tb_logger: TensorBoardLogger):
 
 def process_structured3d(cfg, save_path, tb_logger: TensorBoardLogger):
     dataset_path = str(cfg.dataset.path)
+    split_entries = load_split(str(cfg.splits_path), "structured3d")
     scenes = sorted([s for s in os.listdir(dataset_path) if s.startswith("scene_")])
     generation_times = []
     counter = 0
@@ -99,6 +103,7 @@ def process_structured3d(cfg, save_path, tb_logger: TensorBoardLogger):
         if not os.path.isdir(rendering_path):
             continue
         rooms = sorted(os.listdir(rendering_path))
+        rooms = filter_structured3d_rooms(rooms, scene, split_entries)
         for room in rooms:
             if counter >= cfg.generation_iters:
                 break

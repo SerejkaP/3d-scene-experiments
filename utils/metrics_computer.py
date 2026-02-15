@@ -312,8 +312,12 @@ class MetricsComputer:
         scene_niqe = float(np.nanmean([m["niqe"] for m in metrics_list]))
         scene_brisque = float(np.nanmean([m["brisque"] for m in metrics_list]))
 
-        # Compute FID across all views
-        scene_fid = self.fid_metric.compute(gt_paths, rendered_paths)
+        # Compute FID across all views (requires at least 2 images)
+        scene_fid = float("nan")
+        if num_views >= 2:
+            scene_fid = self.fid_metric.compute(gt_paths, rendered_paths)
+        else:
+            print(f"Skipping FID: need at least 2 views, got {num_views}")
 
         # Log to TensorBoard
         self.tb_logger.log_scalar("Metrics/Scene/LPIPS_mean", scene_lpips, step)
@@ -322,7 +326,8 @@ class MetricsComputer:
         self.tb_logger.log_scalar("Metrics/Scene/SSIM_mean", scene_ssim, step)
         self.tb_logger.log_scalar("Metrics/Scene/NIQE_mean", scene_niqe, step)
         self.tb_logger.log_scalar("Metrics/Scene/BRISQUE_mean", scene_brisque, step)
-        self.tb_logger.log_scalar("Metrics/Scene/FID", scene_fid, step)
+        if not np.isnan(scene_fid):
+            self.tb_logger.log_scalar("Metrics/Scene/FID", scene_fid, step)
 
         # Print to console
         print(f"Scene average LPIPS: {scene_lpips}")
