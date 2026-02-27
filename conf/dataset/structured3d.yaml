@@ -1,3 +1,6 @@
 name: structured3d
 path: "/mnt/d/datasets/Structured3D"
+# Путь к .txt файлу, в котором лежит список панорам, для которых не должны удаляться данные
+restricted_data_path: null
 pano_width: 1024
+pano_height: 512

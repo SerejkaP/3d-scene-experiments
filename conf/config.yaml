@@ -1,12 +1,16 @@
 defaults:
   - model: worldgen
-  - dataset: 2d3ds
+  - dataset: ob3d
   - _self_
 
 generation_iters: 1
-save_path: /mnt/e/3D/experiments/output
+save_path: /mnt/d/outputs
 splits_path: /mnt/e/3D/experiments/splits
 generate: true
+# Удаление .ply файлов после генерации (файлы из dataset.restricted_data_path не удаляются)
+remove_generate: false
+# Удаление файлов рендеринга камер из сгенерированных .ply файлов (файлы из dataset.restricted_data_path не удаляются)
+remove_renders: false
 
 tensorboard:
   enabled: true
@@ -14,13 +18,6 @@ tensorboard:
   flush_secs: 30
   log_images: true
   max_images_per_scene: 5
-
-# wandb:
-#   enabled: true
-#   log_dir: null
-#   project: "3d-generation"
-#   log_images: true
-#   max_images_per_scene: 5
 
 hydra:
   run:

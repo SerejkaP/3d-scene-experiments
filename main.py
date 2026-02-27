@@ -24,7 +24,7 @@ def create_gs(model_name, pano_path, save_path):
         raise Exception("Undefined model name!")
 
 
-def render_2d3ds(ply_file, pano_json_path, camera_json_path, output_path):
+def render_2d3ds(ply_file, pano_json_path, camera_json_path, output_path, output_depth_path=None, swap_yz=False):
     with open(pano_json_path, "r") as f:
         pano_data = json.load(f)
 
@@ -39,6 +39,8 @@ def render_2d3ds(ply_file, pano_json_path, camera_json_path, output_path):
         camera_rt=np.array(camera_data["camera_rt_matrix"]),
         camera_k=np.array(camera_data["camera_k_matrix"]),
         output_path=output_path,
+        output_depth_path=output_depth_path,
+        swap_yz=swap_yz,
     )
 
 
@@ -57,7 +59,8 @@ def render_ob3d(ply_file, camera_pose_path, output_path, output_depth_path=None)
 
 
 def render_structured3d(
-    ply_file, pano_position, camera_pose_path, output_path, output_depth_path=None
+    ply_file, pano_position, camera_pose_path, output_path, output_depth_path=None,
+    swap_yz=False,
 ):
     """
     Render perspective view for Structured3D dataset.
@@ -118,6 +121,7 @@ def render_structured3d(
         camera_k=camera_k,
         output_path=output_path,
         output_depth_path=output_depth_path,
+        swap_yz=swap_yz,
     )
 
 

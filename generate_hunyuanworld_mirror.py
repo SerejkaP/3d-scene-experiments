@@ -1,7 +1,16 @@
 import os
+import sys
+import shutil
+import tempfile
+
+sys.path.insert(
+    0,
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "HunyuanWorld-Mirror"),
+)
+
 import hydra
 from omegaconf import DictConfig
-from main import create_gs
+from generate_scene import generate_scene
 from utils.tensorboard_logger import TensorBoardLogger
 from utils.splits import load_split, filter_2d3ds_panos, filter_structured3d_rooms
 
@@ -10,9 +19,30 @@ def _limit_reached(counter, generation_iters):
     return generation_iters != -1 and counter >= generation_iters
 
 
+def _create_hunyuanworld_mirror(pano_path, ply_path, target_size, fps, pretrained):
+    """Generate a HunyuanWorld-Mirror scene from a single panorama, move result to ply_path."""
+    parent_dir = os.path.dirname(ply_path)
+    # HunyuanWorld-Mirror expects a directory of images, so put the pano in a temp dir.
+    img_dir = tempfile.mkdtemp(dir=parent_dir)
+    out_dir = tempfile.mkdtemp(dir=parent_dir)
+    try:
+        shutil.copy2(pano_path, os.path.join(img_dir, os.path.basename(pano_path)))
+        src_ply, elapsed = generate_scene(
+            img_dir, out_dir, target_size=target_size, fps=fps, pretrained=pretrained
+        )
+        shutil.move(src_ply, ply_path)
+    finally:
+        shutil.rmtree(img_dir, ignore_errors=True)
+        shutil.rmtree(out_dir, ignore_errors=True)
+    return elapsed
+
+
 def process_2d3ds(cfg, save_path, tb_logger: TensorBoardLogger):
     dataset_path = str(cfg.dataset.path)
     split_entries = load_split(str(cfg.splits_path), "2d3ds")
+    target_size = cfg.model.params.target_size
+    fps = cfg.model.params.fps
+    pretrained = cfg.model.params.pretrained
     areas = sorted([s for s in os.listdir(dataset_path) if s.startswith("area_")])
     generation_times = []
     counter = 0
@@ -37,7 +67,9 @@ def process_2d3ds(cfg, save_path, tb_logger: TensorBoardLogger):
             ply_path = os.path.join(area_save_path, f"{scene_name}_render.ply")
 
             print(f"[2d3ds] Generate scene for {pano_name}")
-            generation_time = create_gs(cfg.model.name, pano_rgb_path, ply_path)
+            generation_time = _create_hunyuanworld_mirror(
+                pano_rgb_path, ply_path, target_size, fps, pretrained
+            )
             tb_logger.log_scalar(
                 "Performance/generation_time_seconds", generation_time, counter
             )
@@ -58,6 +90,9 @@ def process_ob3d(cfg, save_path, tb_logger: TensorBoardLogger):
         "sun-temple",
     ]
     dataset_path = str(cfg.dataset.path)
+    target_size = cfg.model.params.target_size
+    fps = cfg.model.params.fps
+    pretrained = cfg.model.params.pretrained
     generation_times = []
     counter = 0
     for scene in avail_scenes:
@@ -88,7 +123,9 @@ def process_ob3d(cfg, save_path, tb_logger: TensorBoardLogger):
                 ply_path = os.path.join(save_scene_path, f"{t_scene}_render.ply")
 
                 print(f"[ob3d] Generate scene for {scene}/{scene_type}/{t_scene}")
-                generation_time = create_gs(cfg.model.name, pano_rgb_path, ply_path)
+                generation_time = _create_hunyuanworld_mirror(
+                    pano_rgb_path, ply_path, target_size, fps, pretrained
+                )
                 tb_logger.log_scalar(
                     "Performance/generation_time_seconds", generation_time, counter
                 )
@@ -102,6 +139,9 @@ def process_ob3d(cfg, save_path, tb_logger: TensorBoardLogger):
 def process_structured3d(cfg, save_path, tb_logger: TensorBoardLogger):
     dataset_path = str(cfg.dataset.path)
     split_entries = load_split(str(cfg.splits_path), "structured3d")
+    target_size = cfg.model.params.target_size
+    fps = cfg.model.params.fps
+    pretrained = cfg.model.params.pretrained
     scenes = sorted([s for s in os.listdir(dataset_path) if s.startswith("scene_")])
     generation_times = []
     counter = 0
@@ -128,7 +168,9 @@ def process_structured3d(cfg, save_path, tb_logger: TensorBoardLogger):
 
             room_name = f"{scene}_{room}"
             print(f"[structured3d] Generate scene for {room_name}")
-            generation_time = create_gs(cfg.model.name, pano_rgb_path, ply_path)
+            generation_time = _create_hunyuanworld_mirror(
+                pano_rgb_path, ply_path, target_size, fps, pretrained
+            )
             tb_logger.log_scalar(
                 "Performance/generation_time_seconds", generation_time, counter
             )

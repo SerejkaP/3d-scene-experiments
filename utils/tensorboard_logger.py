@@ -1,9 +1,7 @@
 import torch
 import cv2
-import numpy as np
 from torch.utils.tensorboard import SummaryWriter
-from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
 
 class TensorBoardLogger:

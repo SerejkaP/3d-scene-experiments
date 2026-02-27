@@ -1,0 +1,5 @@
+name: hunyuanworld_mirror
+params:
+  target_size: 518
+  fps: 1
+  pretrained: "tencent/HunyuanWorld-Mirror"

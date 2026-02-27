@@ -1,0 +1,4 @@
+name: dreamscene360
+swap_yz: true
+params:
+  iterations: 1000

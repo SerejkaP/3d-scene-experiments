@@ -1,5 +1,6 @@
+from logging import info
 import numpy as np
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List
 from utils.metrics import (
     LpipsMetric,
     ClipDistanceMetric,
@@ -81,12 +82,12 @@ class MetricsComputer:
         self.tb_logger.log_scalar("Metrics/Panorama/BRISQUE", pano_brisque, step)
 
         # Print to console
-        print(f"PANO LPIPS: {pano_lpips}")
-        print(f"PANO CLIP-Distance: {pano_clip_d}")
-        print(f"PANO PSNR: {pano_psnr}")
-        print(f"PANO SSIM: {pano_ssim}")
-        print(f"PANO NIQE: {pano_niqe}")
-        print(f"PANO BRISQUE: {pano_brisque}")
+        info(f"PANO LPIPS: {pano_lpips}")
+        info(f"PANO CLIP-Distance: {pano_clip_d}")
+        info(f"PANO PSNR: {pano_psnr}")
+        info(f"PANO SSIM: {pano_ssim}")
+        info(f"PANO NIQE: {pano_niqe}")
+        info(f"PANO BRISQUE: {pano_brisque}")
 
         return {
             "lpips": pano_lpips,
@@ -140,11 +141,13 @@ class MetricsComputer:
 
                 # Log to TensorBoard
                 self.tb_logger.log_scalar("Metrics/Panorama/Depth_RMSE", rmse, step)
-                self.tb_logger.log_scalar("Metrics/Panorama/Depth_AbsRel", abs_rel, step)
+                self.tb_logger.log_scalar(
+                    "Metrics/Panorama/Depth_AbsRel", abs_rel, step
+                )
 
                 # Print to console
-                print(f"PANO Depth RMSE: {rmse:.4f}")
-                print(f"PANO Depth Abs Rel: {abs_rel:.4f}")
+                info(f"PANO Depth RMSE: {rmse:.4f}")
+                info(f"PANO Depth Abs Rel: {abs_rel:.4f}")
 
                 return {"rmse": rmse, "abs_rel": abs_rel}
 
@@ -321,7 +324,9 @@ class MetricsComputer:
 
         # Log to TensorBoard
         self.tb_logger.log_scalar("Metrics/Scene/LPIPS_mean", scene_lpips, step)
-        self.tb_logger.log_scalar("Metrics/Scene/CLIP-Distance_mean", scene_clip_d, step)
+        self.tb_logger.log_scalar(
+            "Metrics/Scene/CLIP-Distance_mean", scene_clip_d, step
+        )
         self.tb_logger.log_scalar("Metrics/Scene/PSNR_mean", scene_psnr, step)
         self.tb_logger.log_scalar("Metrics/Scene/SSIM_mean", scene_ssim, step)
         self.tb_logger.log_scalar("Metrics/Scene/NIQE_mean", scene_niqe, step)
@@ -349,7 +354,12 @@ class MetricsComputer:
         }
 
     def log_image_comparison(
-        self, tag: str, gt_path: str, rendered_path: str, step: int, log_images: bool = True
+        self,
+        tag: str,
+        gt_path: str,
+        rendered_path: str,
+        step: int,
+        log_images: bool = True,
     ) -> None:
         """
         Log image comparison to TensorBoard if enabled.

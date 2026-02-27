@@ -1,12 +1,37 @@
+import math
 import torch
 import numpy as np
 from plyfile import PlyData
 import cv2
 import os
+from typing import Dict, Optional, Sequence, Tuple
 from gsplat.rendering import rasterization
 import py360convert
 import OpenEXR
 import Imath
+
+
+def compute_scene_radius(ply_path: str, percentile: float = 90.0) -> float:
+    """
+    Estimate the spatial extent of a Gaussian Splatting scene.
+
+    Computes the given percentile of the Euclidean distance of each Gaussian
+    mean from the scene origin.  Useful for auto-scaling camera positions when
+    the GS coordinate space and the dataset world-coordinate space are at
+    different scales (e.g. DreamScene360 vs. WorldGen).
+
+    Args:
+        ply_path:   Path to the Gaussian Splatting PLY file.
+        percentile: Percentile of mean distances to return (default 90).
+
+    Returns:
+        Scene radius estimate in GS coordinate units.
+    """
+    plydata = PlyData.read(ply_path)
+    v = plydata["vertex"]
+    means = np.stack([v["x"], v["y"], v["z"]], axis=-1)
+    dists = np.linalg.norm(means, axis=-1)
+    return float(np.percentile(dists, percentile))
 
 
 def _save_depth_exr(depth_map: np.ndarray, output_path: str, channel: str = "Z"):
@@ -119,8 +144,32 @@ def _load_gs_ply(path, device):
     return means, colors, opacity, scales, quats
 
 
-def _get_cubemap_views(center):
-    center = np.array(center)
+def _roll_view_world2cam(V: torch.Tensor, deg: float) -> torch.Tensor:
+    """Roll камеры (world->cam матрица) вокруг camera forward (оси Z в camera space)."""
+    th = math.radians(deg)
+    c, s = math.cos(th), math.sin(th)
+    R = torch.tensor(
+        [
+            [c, -s, 0.0, 0.0],
+            [s, c, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        dtype=V.dtype,
+        device=V.device,
+    )
+    return R @ V  # <- слева, т.к. это поворот в camera-space для world->cam
+
+
+def _ds_zup_to_renderer_yup(v: np.ndarray) -> np.ndarray:
+    """[x,y,z]_DS(Z-up) -> [x,z,-y]_Yup"""
+    x, y, z = v
+    return np.array([x, z, -y], dtype=np.float32)
+
+
+def _get_cubemap_views(center, swap_yz: bool = False):
+    center = np.array(center, dtype=np.float32)
+
     faces_config = {
         "front": {"target": [0, 0, -1], "up": [0, 1, 0]},
         "right": {"target": [-1, 0, 0], "up": [0, 1, 0]},
@@ -130,35 +179,66 @@ def _get_cubemap_views(center):
         "bottom": {"target": [0, -1, 0], "up": [0, 0, -1]},
     }
 
+    # Если swap_yz=True, мы хотим трактовать вход как Z-up (DreamScene360)
+    # и получить матрицы под Y-up рендерер.
+    if swap_yz:
+        tmp = dict(faces_config)
+        faces_config = {
+            "front": tmp["right"],
+            "right": tmp["back"],
+            "back": tmp["left"],
+            "left": tmp["front"],
+            "top": tmp["top"],
+            "bottom": tmp["bottom"],
+        }
+        center_use = _ds_zup_to_renderer_yup(center)
+    else:
+        center_use = center
+
     viewmats = {}
     for name, cfg in faces_config.items():
-        target = center + np.array(cfg["target"])
-        up = np.array(cfg["up"])
+        if swap_yz:
+            target = center_use + _ds_zup_to_renderer_yup(cfg["target"])
+            up = _ds_zup_to_renderer_yup(cfg["up"])
+        else:
+            target = center_use + np.array(cfg["target"])
+            up = np.array(cfg["up"])
 
-        z = (center - target) / np.linalg.norm(center - target)
+        z = (center_use - target) / np.linalg.norm(center_use - target)
         x = np.cross(up, z) / np.linalg.norm(np.cross(up, z))
         y = np.cross(z, x)
 
         R = np.stack([x, y, z], axis=0)
-        t = -R @ center
+        t = -R @ center_use
 
         mat = np.eye(4)
         mat[:3, :3] = R
         mat[:3, 3] = t
         viewmats[name] = torch.tensor(mat, dtype=torch.float32)
 
+    if swap_yz:
+        # После Z-up -> Y-up обычно требуется довернуть top/bottom по roll.
+        # Если вдруг стало "в другую сторону", просто поменяйте знаки:
+        viewmats["top"] = _roll_view_world2cam(viewmats["top"], 90.0)
+        viewmats["bottom"] = _roll_view_world2cam(viewmats["bottom"], -90.0)
+
     return viewmats
 
 
 def render_cubemap(
-    ply_path, center_pos, size, output_path: str, render_depth: bool = False
+    ply_path,
+    center_pos,
+    size,
+    output_path: str,
+    render_depth: bool = False,
+    swap_yz: bool = False,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     output_dir = os.path.dirname(output_path)
     os.makedirs(output_dir, exist_ok=True)
 
     means, colors, opacities, scales, quats = _load_gs_ply(ply_path, device)
-    view_configs = _get_cubemap_views(center_pos)
+    view_configs = _get_cubemap_views(center_pos, swap_yz=swap_yz)
 
     focal = size / 2.0
     K = torch.tensor(
@@ -250,28 +330,41 @@ def render_pano(
     size=1024,
     output_path="pano_render.png",
     output_depth_path=None,
+    swap_yz: bool = False,
 ):
     render_depth = output_depth_path is not None
     result = render_cubemap(
-        ply_path, center_pos, size, output_path, render_depth=render_depth
+        ply_path,
+        center_pos,
+        size,
+        output_path,
+        render_depth=render_depth,
+        swap_yz=swap_yz,
     )
 
     # Convert RGB faces to panorama
     rgb_faces = {k: v for k, v in result.items() if k != "depth_faces"}
     _faces_to_pano(rgb_faces, output_path, size, is_depth=False)
 
-    # Convert depth faces to panorama if requested
-    depth_pano = None
     if render_depth and "depth_faces" in result:
         _faces_to_pano(result["depth_faces"], output_depth_path, size, is_depth=True)
 
-        # Load the saved depth for return
-        depth_pano = load_depth(output_depth_path, depth_scale=1.0)
-
-    return depth_pano
+    return 
 
 
-def _correct_camera_orientation(pano_location, camera_location, pano_rt, camera_rt):
+def _Rz(deg: float) -> np.ndarray:
+    th = np.deg2rad(deg)
+    c, s = np.cos(th), np.sin(th)
+    return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], dtype=np.float64)
+
+
+def _Rzup_to_yup_basis() -> np.ndarray:
+    return np.array([[-1, 0, 0], [0, 0, -1], [0, -1, 0]], dtype=np.float64)
+
+
+def _correct_camera_orientation(
+    pano_location, camera_location, pano_rt, camera_rt, swap_yz: bool = False
+):
     """
     Corrects the camera position from global coordinates for a centered Gaussian Splatting scene
     """
@@ -288,6 +381,8 @@ def _correct_camera_orientation(pano_location, camera_location, pano_rt, camera_
     viewmat = np.eye(4)
     viewmat[:3, :3] = R_view
     viewmat[:3, 3] = t_view
+    if swap_yz:
+        viewmat[:3, :3] = viewmat[:3, :3] @ _Rzup_to_yup_basis() @ _Rz(-90)
     return viewmat
 
 
@@ -300,11 +395,12 @@ def render_camera(
     camera_k,
     output_path="result_view.png",
     output_depth_path: str = None,
+    swap_yz: bool = False,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     viewmat = _correct_camera_orientation(
-        pano_location, camera_location, pano_rt, camera_rt
+        pano_location, camera_location, pano_rt, camera_rt, swap_yz=swap_yz
     )
     K_raw = np.array(camera_k)
     W, H = int(K_raw[0, 2] * 2), int(K_raw[1, 2] * 2)
@@ -357,5 +453,113 @@ def render_camera(
             depth_map_mm = np.clip(depth_map * 1000.0, 0, 65535)
             depth_map_scaled = depth_map_mm.astype(np.uint16)
             cv2.imwrite(output_depth_path, depth_map_scaled)
+
+    return img, depth_map
+
+
+def render_virtual_camera(
+    ply_path: str,
+    camera: Dict,
+    output_path: str,
+    output_depth_path: Optional[str] = None,
+    center_pos: Sequence[float] = (0.0, 0.0, 0.0),
+    swap_yz: bool = False,
+) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    """
+    Render a Gaussian Splatting scene from a virtual camera defined by yaw / pitch / FOV.
+
+    The camera dict format matches the output of
+    :func:`utils.pano_virtual_cameras.get_virtual_cameras`.  In particular,
+    ``camera["R"]`` is the world-to-camera rotation matrix (rows = right, up, back)
+    and ``camera["K"]`` is the 3×3 pinhole intrinsic matrix.
+
+    Args:
+        ply_path:          Path to the Gaussian Splatting PLY file.
+        camera:            Camera dict with keys ``R``, ``K``, ``width``, ``height``.
+        output_path:       File path where the RGB render is saved (PNG recommended).
+        output_depth_path: Optional file path for the depth map.
+                           Extension determines format: ``.exr`` → OpenEXR float32,
+                           ``.npy`` → NumPy array, otherwise 16-bit PNG (mm).
+        center_pos:        Camera position in world space.  For scenes generated with
+                           the default WorldGen pipeline the camera sits at the origin
+                           ``(0, 0, 0)``.
+
+    Returns:
+        Tuple ``(rgb_image, depth_map)``.
+        ``rgb_image`` is uint8 BGR (H, W, 3) matching OpenCV convention.
+        ``depth_map`` is float32 (H, W) in metres, or ``None`` when depth is not
+        requested.
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    R = np.asarray(camera["R"], dtype=np.float64)  # (3, 3) world-to-camera rotation
+    K = np.asarray(camera["K"], dtype=np.float32)  # (3, 3) intrinsics
+    W, H = int(camera["width"]), int(camera["height"])
+
+    center = np.asarray(center_pos, dtype=np.float64)
+    if swap_yz:
+        S = _Rzup_to_yup_basis() @ _Rz(-90.0)   # тот же “мировой” фикс, что у вас в основном рендере
+
+        # 1) меняем базис у world->cam (справа)
+        R = R @ S
+
+        # 2) переводим center в новый базис (inverse = transpose)
+        center = (S.T @ center)
+
+    t = (-R @ center).astype(np.float32)
+
+    viewmat = np.eye(4, dtype=np.float32)
+    viewmat[:3, :3] = R.astype(np.float32)
+    viewmat[:3, 3] = t
+
+    viewmat_tensor = torch.tensor(
+        viewmat, dtype=torch.float32, device=device
+    ).unsqueeze(0)
+    K_tensor = torch.tensor(K, dtype=torch.float32, device=device).unsqueeze(0)
+
+    means, colors, opacities, scales, quats = _load_gs_ply(ply_path, device)
+
+    render_mode = "RGB+ED" if output_depth_path is not None else "RGB"
+
+    with torch.no_grad():
+        render_output, _, _ = rasterization(
+            means,
+            quats,
+            scales,
+            opacities,
+            colors,
+            viewmat_tensor,
+            K_tensor,
+            W,
+            H,
+            near_plane=0.01,
+            far_plane=1000.0,
+            render_mode=render_mode,
+        )
+
+    if render_mode == "RGB+ED":
+        render_colors = render_output[0, :, :, :3]
+        depth_map = render_output[0, :, :, 3].cpu().numpy()
+    else:
+        render_colors = render_output[0]
+        depth_map = None
+
+    img = (render_colors.cpu().numpy().clip(0, 1) * 255).astype(np.uint8)
+    out_dir = os.path.dirname(output_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    cv2.imwrite(output_path, cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+
+    if output_depth_path is not None and depth_map is not None:
+        depth_dir = os.path.dirname(output_depth_path)
+        if depth_dir:
+            os.makedirs(depth_dir, exist_ok=True)
+        if output_depth_path.lower().endswith(".exr"):
+            _save_depth_exr(depth_map, output_depth_path)
+        elif output_depth_path.lower().endswith(".npy"):
+            np.save(output_depth_path, depth_map)
+        else:
+            depth_mm = np.clip(depth_map * 1000.0, 0, 65535).astype(np.uint16)
+            cv2.imwrite(output_depth_path, depth_mm)
 
     return img, depth_map

@@ -1,7 +1,13 @@
 import os
+import sys
+import shutil
+import tempfile
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "DreamScene360"))
+
 import hydra
 from omegaconf import DictConfig
-from main import create_gs
+from generate_scene import generate_scene
 from utils.tensorboard_logger import TensorBoardLogger
 from utils.splits import load_split, filter_2d3ds_panos, filter_structured3d_rooms
 
@@ -10,9 +16,22 @@ def _limit_reached(counter, generation_iters):
     return generation_iters != -1 and counter >= generation_iters
 
 
+def _create_dreamscene360(pano_path, ply_path, iterations):
+    """Generate a DreamScene360 scene, move the result to ply_path, clean up training dir."""
+    parent_dir = os.path.dirname(ply_path)
+    train_dir = tempfile.mkdtemp(dir=parent_dir)
+    try:
+        src_ply, elapsed = generate_scene(pano_path, train_dir, iterations)
+        shutil.move(src_ply, ply_path)
+    finally:
+        shutil.rmtree(train_dir, ignore_errors=True)
+    return elapsed
+
+
 def process_2d3ds(cfg, save_path, tb_logger: TensorBoardLogger):
     dataset_path = str(cfg.dataset.path)
     split_entries = load_split(str(cfg.splits_path), "2d3ds")
+    iterations = cfg.model.params.iterations
     areas = sorted([s for s in os.listdir(dataset_path) if s.startswith("area_")])
     generation_times = []
     counter = 0
@@ -37,7 +56,7 @@ def process_2d3ds(cfg, save_path, tb_logger: TensorBoardLogger):
             ply_path = os.path.join(area_save_path, f"{scene_name}_render.ply")
 
             print(f"[2d3ds] Generate scene for {pano_name}")
-            generation_time = create_gs(cfg.model.name, pano_rgb_path, ply_path)
+            generation_time = _create_dreamscene360(pano_rgb_path, ply_path, iterations)
             tb_logger.log_scalar(
                 "Performance/generation_time_seconds", generation_time, counter
             )
@@ -58,6 +77,7 @@ def process_ob3d(cfg, save_path, tb_logger: TensorBoardLogger):
         "sun-temple",
     ]
     dataset_path = str(cfg.dataset.path)
+    iterations = cfg.model.params.iterations
     generation_times = []
     counter = 0
     for scene in avail_scenes:
@@ -88,7 +108,7 @@ def process_ob3d(cfg, save_path, tb_logger: TensorBoardLogger):
                 ply_path = os.path.join(save_scene_path, f"{t_scene}_render.ply")
 
                 print(f"[ob3d] Generate scene for {scene}/{scene_type}/{t_scene}")
-                generation_time = create_gs(cfg.model.name, pano_rgb_path, ply_path)
+                generation_time = _create_dreamscene360(pano_rgb_path, ply_path, iterations)
                 tb_logger.log_scalar(
                     "Performance/generation_time_seconds", generation_time, counter
                 )
@@ -102,6 +122,7 @@ def process_ob3d(cfg, save_path, tb_logger: TensorBoardLogger):
 def process_structured3d(cfg, save_path, tb_logger: TensorBoardLogger):
     dataset_path = str(cfg.dataset.path)
     split_entries = load_split(str(cfg.splits_path), "structured3d")
+    iterations = cfg.model.params.iterations
     scenes = sorted([s for s in os.listdir(dataset_path) if s.startswith("scene_")])
     generation_times = []
     counter = 0
@@ -128,7 +149,7 @@ def process_structured3d(cfg, save_path, tb_logger: TensorBoardLogger):
 
             room_name = f"{scene}_{room}"
             print(f"[structured3d] Generate scene for {room_name}")
-            generation_time = create_gs(cfg.model.name, pano_rgb_path, ply_path)
+            generation_time = _create_dreamscene360(pano_rgb_path, ply_path, iterations)
             tb_logger.log_scalar(
                 "Performance/generation_time_seconds", generation_time, counter
             )

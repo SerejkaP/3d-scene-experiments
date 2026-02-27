@@ -16,8 +16,11 @@ import random
 from pathlib import Path
 
 
-def collect_2d3ds_panoramas(dataset_path: str) -> list[str]:
-    """Собирает все панорамы из 2D-3D-Semantics.
+def collect_2d3ds_panoramas(dataset_path: str, min_cameras: int = 1) -> list[str]:
+    """Собирает все панорамы из 2D-3D-Semantics, у которых есть камеры в data/pose.
+
+    Args:
+        min_cameras: Минимальное количество камер в data/pose для включения панорамы.
 
     Returns:
         Список строк вида "area_N/filename.png"
@@ -27,13 +30,29 @@ def collect_2d3ds_panoramas(dataset_path: str) -> list[str]:
     areas = sorted(p.name for p in dataset.iterdir() if p.name.startswith("area_"))
     for area in areas:
         pano_rgb = dataset / area / "pano" / "rgb"
+        data_pose = dataset / area / "data" / "pose"
         if not pano_rgb.is_dir():
             print(f"  [warn] {pano_rgb} не найдена, пропуск")
             continue
         panos = sorted(f.name for f in pano_rgb.iterdir() if f.suffix == ".png")
+        kept = 0
+        skipped = 0
         for pano in panos:
-            panoramas.append(f"{area}/{pano}")
-        print(f"  {area}: {len(panos)} панорам")
+            # Имя панорамы без лишних суффиксов: первые 5 частей через _
+            pano_name = "_".join(pano.split("_")[:5])
+            if data_pose.is_dir():
+                n_cameras = sum(
+                    1 for f in data_pose.iterdir()
+                    if f.name.startswith(f"{pano_name}_") and f.suffix == ".json"
+                )
+            else:
+                n_cameras = 0
+            if n_cameras >= min_cameras:
+                panoramas.append(f"{area}/{pano}")
+                kept += 1
+            else:
+                skipped += 1
+        print(f"  {area}: {kept} панорам (пропущено {skipped} без камер)")
     return panoramas
 
 
@@ -139,6 +158,12 @@ def main():
         default=42,
         help="Random seed для воспроизводимости (default: 42)",
     )
+    parser.add_argument(
+        "--min-cameras",
+        type=int,
+        default=5,
+        help="Минимальное количество камер в data/pose для включения панорамы (default: 1)",
+    )
     args = parser.parse_args()
 
     # Если ни ratio, ни count не указаны — используем ratio=0.1
@@ -149,7 +174,7 @@ def main():
 
     if "2d3ds" in args.datasets:
         print("\n=== 2D-3D-Semantics ===")
-        panoramas = collect_2d3ds_panoramas(args.path_2d3ds)
+        panoramas = collect_2d3ds_panoramas(args.path_2d3ds, min_cameras=args.min_cameras)
         print(f"Всего панорам: {len(panoramas)}")
         train, test = make_split(panoramas, args.seed, test_ratio=test_ratio, test_count=test_count)
         print(f"Train: {len(train)}, Test: {len(test)}")
