@@ -1,13 +1,20 @@
 import os
 import hydra
 from omegaconf import DictConfig
-from main import create_gs
 from utils.tensorboard_logger import TensorBoardLogger
-from utils.splits import load_split, filter_2d3ds_panos, filter_structured3d_rooms
+from utils.splits import load_split, filter_2d3ds_panos
+from worldgen_utils import worldgen_generate
 
 
 def _limit_reached(counter, generation_iters):
     return generation_iters != -1 and counter >= generation_iters
+
+# Метод под замену на метод текущей модели
+def create_gs(model_name, pano_path, save_path):
+    if model_name == "worldgen":
+        return worldgen_generate(pano_path, save_path)
+    else:
+        raise Exception("Undefined model name!")
 
 
 def process_2d3ds(

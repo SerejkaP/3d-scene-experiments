@@ -3,11 +3,13 @@ import os
 import hydra
 from omegaconf import DictConfig
 import numpy as np
-import cv2
-import py360convert
 from tqdm import tqdm
-from main import render_2d3ds
-from utils.gsplat_utils import compute_scene_radius, render_pano, render_virtual_camera
+from utils.gsplat_utils import (
+    compute_scene_radius,
+    render_camera,
+    render_pano,
+    render_virtual_camera,
+)
 from utils.dataset_2d3ds_utils import pose_json_by_image_path
 from utils.metrics import ClipDistanceMetric, LpipsMetric, FidMetric, DepthMetrics
 from utils.tensorboard_logger import TensorBoardLogger
@@ -48,6 +50,41 @@ def _print_and_log_averages(
 
 def _limit_reached(counter, generation_iters):
     return generation_iters != -1 and counter >= generation_iters
+
+
+def render_2d3ds(
+    ply_file,
+    pano_json_path,
+    camera_json_path,
+    output_path,
+    output_depth_path=None,
+    swap_yz=False,
+    center_pos_scale: float = 1.0,
+):
+    with open(pano_json_path, "r") as f:
+        pano_data = json.load(f)
+
+    with open(camera_json_path, "r") as f:
+        camera_data = json.load(f)
+
+    pano_location = np.array(pano_data["camera_location"])
+    camera_location = np.array(camera_data["camera_location"])
+    if center_pos_scale != 1.0:
+        camera_location = (
+            pano_location + (camera_location - pano_location) * center_pos_scale
+        )
+
+    render_camera(
+        ply_file,
+        pano_location=pano_location,
+        camera_location=camera_location,
+        pano_rt=np.array(pano_data["camera_rt_matrix"]),
+        camera_rt=np.array(camera_data["camera_rt_matrix"]),
+        camera_k=np.array(camera_data["camera_k_matrix"]),
+        output_path=output_path,
+        output_depth_path=output_depth_path,
+        swap_yz=swap_yz,
+    )
 
 
 def evaluate_2d3ds(
@@ -313,6 +350,23 @@ def evaluate_2d3ds(
     )
 
 
+# Максимальная глубина в каждой сцене
+MAX_DEPTH_SCENE_DICT = {
+    "barbershop": 10,
+    "archiviz-flat": 20,
+    "bistro": 50,
+    "classroom": 15,
+    "emerald-square": 70,
+    "fisher-hut": 70,
+    "lone-monk": 25,
+    "restroom": 20,
+    "san-miguel": 20,
+    "sponza": 20,
+    "sun-temple": 20,
+    "pavillion": 50,
+}
+
+
 def evaluate_ob3d(
     cfg,
     save_path,
@@ -344,29 +398,13 @@ def evaluate_ob3d(
         "sun-temple",
     ]
 
-    # Максимальная глубина в каждой сцене
-    max_depth_scene_dict = {
-        "barbershop": 10,
-        "archiviz-flat": 20,
-        "bistro": 50,
-        "classroom": 15,
-        "emerald-square": 70,
-        "fisher-hut": 70,
-        "lone-monk": 25,
-        "restroom": 20,
-        "san-miguel": 20,
-        "sponza": 20,
-        "sun-temple": 20,
-        "pavillion": 50,
-    }
-
     dataset_path = str(cfg.dataset.path)
     counter = 0
     for scene in avail_scenes:
         if _limit_reached(counter, cfg.generation_iters):
             break
         depth_metric = DepthMetrics(
-            min_depth=0.0, max_depth=max_depth_scene_dict[scene]
+            min_depth=0.0, max_depth=MAX_DEPTH_SCENE_DICT[scene]
         )
         metrics_computer.depth_metric = depth_metric
         # Оставлен подсчет метрик только для Non-Egocentric
