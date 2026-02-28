@@ -10,7 +10,13 @@ def _limit_reached(counter, generation_iters):
     return generation_iters != -1 and counter >= generation_iters
 
 
-def process_2d3ds(cfg, save_path, tb_logger: TensorBoardLogger):
+def process_2d3ds(
+    cfg,
+    save_path,
+    tb_logger: TensorBoardLogger,
+    remove_generate: bool = False,
+    restricted_data: list[str] = [],
+):
     dataset_path = str(cfg.dataset.path)
     split_entries = load_split(str(cfg.splits_path), "2d3ds")
     areas = sorted([s for s in os.listdir(dataset_path) if s.startswith("area_")])
@@ -43,12 +49,20 @@ def process_2d3ds(cfg, save_path, tb_logger: TensorBoardLogger):
             )
             print(f"Generation time: {generation_time}")
             generation_times.append(generation_time)
+            if remove_generate and pano_rgb_path not in restricted_data:
+                os.remove(ply_path)
             counter += 1
 
     return generation_times
 
 
-def process_ob3d(cfg, save_path, tb_logger: TensorBoardLogger):
+def process_ob3d(
+    cfg,
+    save_path,
+    tb_logger: TensorBoardLogger,
+    remove_generate: bool = False,
+    restricted_data: list[str] = [],
+):
     avail_scenes = [
         "archiviz-flat",
         "barbershop",
@@ -94,56 +108,51 @@ def process_ob3d(cfg, save_path, tb_logger: TensorBoardLogger):
                 )
                 print(f"Generation time: {generation_time}")
                 generation_times.append(generation_time)
+                if remove_generate and pano_rgb_path not in restricted_data:
+                    os.remove(ply_path)
                 counter += 1
 
     return generation_times
 
 
-def process_structured3d(cfg, save_path, tb_logger: TensorBoardLogger):
-    dataset_path = str(cfg.dataset.path)
-    split_entries = load_split(str(cfg.splits_path), "structured3d")
-    scenes = sorted([s for s in os.listdir(dataset_path) if s.startswith("scene_")])
-    generation_times = []
-    counter = 0
-    for scene in scenes:
-        if _limit_reached(counter, cfg.generation_iters):
-            break
-        rendering_path = os.path.join(dataset_path, scene, "2D_rendering")
-        if not os.path.isdir(rendering_path):
-            continue
-        rooms = sorted(os.listdir(rendering_path))
-        rooms = filter_structured3d_rooms(rooms, scene, split_entries)
-        for room in rooms:
-            if _limit_reached(counter, cfg.generation_iters):
-                break
-            panorama_dir = os.path.join(rendering_path, room, "panorama")
-            pano_rgb_path = os.path.join(panorama_dir, "full", "rgb_rawlight.png")
-            if not os.path.exists(pano_rgb_path):
-                print(f"Skipping {scene}/{room}: missing panorama")
-                continue
+# def process_structured3d(cfg, save_path, tb_logger: TensorBoardLogger):
+#     dataset_path = str(cfg.dataset.path)
+#     split_entries = load_split(str(cfg.splits_path), "structured3d")
+#     scenes = sorted([s for s in os.listdir(dataset_path) if s.startswith("scene_")])
+#     generation_times = []
+#     counter = 0
+#     for scene in scenes:
+#         if _limit_reached(counter, cfg.generation_iters):
+#             break
+#         rendering_path = os.path.join(dataset_path, scene, "2D_rendering")
+#         if not os.path.isdir(rendering_path):
+#             continue
+#         rooms = sorted(os.listdir(rendering_path))
+#         rooms = filter_structured3d_rooms(rooms, scene, split_entries)
+#         for room in rooms:
+#             if _limit_reached(counter, cfg.generation_iters):
+#                 break
+#             panorama_dir = os.path.join(rendering_path, room, "panorama")
+#             pano_rgb_path = os.path.join(panorama_dir, "full", "rgb_rawlight.png")
+#             if not os.path.exists(pano_rgb_path):
+#                 print(f"Skipping {scene}/{room}: missing panorama")
+#                 continue
 
-            room_save_path = os.path.join(save_path, scene, room)
-            os.makedirs(room_save_path, exist_ok=True)
-            ply_path = os.path.join(room_save_path, "scene.ply")
+#             room_save_path = os.path.join(save_path, scene, room)
+#             os.makedirs(room_save_path, exist_ok=True)
+#             ply_path = os.path.join(room_save_path, "scene.ply")
 
-            room_name = f"{scene}_{room}"
-            print(f"[structured3d] Generate scene for {room_name}")
-            generation_time = create_gs(cfg.model.name, pano_rgb_path, ply_path)
-            tb_logger.log_scalar(
-                "Performance/generation_time_seconds", generation_time, counter
-            )
-            print(f"Generation time: {generation_time}")
-            generation_times.append(generation_time)
-            counter += 1
+#             room_name = f"{scene}_{room}"
+#             print(f"[structured3d] Generate scene for {room_name}")
+#             generation_time = create_gs(cfg.model.name, pano_rgb_path, ply_path)
+#             tb_logger.log_scalar(
+#                 "Performance/generation_time_seconds", generation_time, counter
+#             )
+#             print(f"Generation time: {generation_time}")
+#             generation_times.append(generation_time)
+#             counter += 1
 
-    return generation_times
-
-
-DATASET_PROCESSORS = {
-    "2d3ds": process_2d3ds,
-    "ob3d": process_ob3d,
-    "structured3d": process_structured3d,
-}
+#     return generation_times
 
 
 @hydra.main(config_path="conf", config_name="config", version_base=None)
@@ -155,7 +164,7 @@ def generate(cfg: DictConfig):
         max_image_size=2048,
     )
 
-    dataset_name = cfg.dataset.name
+    dataset_name = str(cfg.dataset.name)
     print(f"\n{'='*60}")
     print(f"Processing dataset: {dataset_name}")
     print(f"{'='*60}\n")
@@ -163,19 +172,18 @@ def generate(cfg: DictConfig):
     save_path = os.path.join(cfg.save_path, cfg.model.name, dataset_name)
     os.makedirs(save_path, exist_ok=True)
 
-    processor = DATASET_PROCESSORS.get(dataset_name)
-    if processor:
-        dataset_times = processor(cfg, save_path, tb_logger)
-        if dataset_times:
-            avg = sum(dataset_times) / len(dataset_times)
-            print(
-                f"\n[{dataset_name}] Average generation time: {avg:.2f}s ({len(dataset_times)} scenes)"
-            )
-            tb_logger.log_scalar(
-                f"Performance/{dataset_name}/avg_generation_time", avg, 0
-            )
+    if dataset_name == "2d3ds":
+        dataset_times = process_2d3ds(cfg, save_path, tb_logger)
+    elif dataset_name == "ob3ds":
+        dataset_times = process_ob3d(cfg, save_path, tb_logger)
     else:
-        print(f"Unknown dataset: {dataset_name}, skipping")
+        raise Exception(f"Unknown dataset: {dataset_name}!")
+    if dataset_times:
+        avg = sum(dataset_times) / len(dataset_times)
+        print(
+            f"\n[{dataset_name}] Average generation time: {avg:.2f}s ({len(dataset_times)} scenes)"
+        )
+        tb_logger.log_scalar(f"Performance/{dataset_name}/avg_generation_time", avg, 0)
 
     tb_logger.close()
 
