@@ -157,6 +157,29 @@ def evaluate_2d3ds(
             gt_paths_for_fid = []
             render_paths_for_fid = []
 
+            # Авто-масштабирование позиций камер под координатное пространство GS-сцены.
+            # Необходимо для DreamScene360 (swap_yz=True): GS генерируется в нормализованном
+            # масштабе, а позиции 2d3ds — в метрах. Масштаб = scene_radius / max_cam_offset.
+            center_pos_scale = 1.0
+            if swap_yz and os.path.exists(ply_render_path):
+                scene_radius = compute_scene_radius(ply_render_path)
+                with open(pano_json_path) as _f:
+                    _pano_loc = np.array(json.load(_f)["camera_location"])
+                _max_cam_dist = 0.0
+                for _cp in camera_poses:
+                    with open(os.path.join(data_pose, _cp)) as _f:
+                        _cam_loc = np.array(json.load(_f)["camera_location"])
+                    _max_cam_dist = max(
+                        _max_cam_dist, float(np.linalg.norm(_cam_loc - _pano_loc))
+                    )
+                if _max_cam_dist > 1e-6:
+                    center_pos_scale = scene_radius / _max_cam_dist
+                    print(
+                        f"  [auto-scale] scene_radius={scene_radius:.3f}, "
+                        f"max_cam_dist={_max_cam_dist:.3f}, "
+                        f"center_pos_scale={center_pos_scale:.4f}"
+                    )
+
             for camera_idx, camera_pose in enumerate(tqdm(camera_poses)):
                 camera_json_path = os.path.join(data_pose, camera_pose)
                 rendered_camera_subname = "_".join(camera_pose.split("_")[:-1])
@@ -180,6 +203,7 @@ def evaluate_2d3ds(
                     rendered_camera_path,
                     rendered_camera_depth_path,
                     swap_yz=swap_yz,
+                    center_pos_scale=center_pos_scale,
                 )
 
                 # Пути к реальному изображению и карте глубины камеры

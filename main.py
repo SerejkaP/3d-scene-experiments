@@ -24,17 +24,22 @@ def create_gs(model_name, pano_path, save_path):
         raise Exception("Undefined model name!")
 
 
-def render_2d3ds(ply_file, pano_json_path, camera_json_path, output_path, output_depth_path=None, swap_yz=False):
+def render_2d3ds(ply_file, pano_json_path, camera_json_path, output_path, output_depth_path=None, swap_yz=False, center_pos_scale: float = 1.0):
     with open(pano_json_path, "r") as f:
         pano_data = json.load(f)
 
     with open(camera_json_path, "r") as f:
         camera_data = json.load(f)
 
+    pano_location = np.array(pano_data["camera_location"])
+    camera_location = np.array(camera_data["camera_location"])
+    if center_pos_scale != 1.0:
+        camera_location = pano_location + (camera_location - pano_location) * center_pos_scale
+
     render_camera(
         ply_file,
-        pano_location=np.array(pano_data["camera_location"]),
-        camera_location=np.array(camera_data["camera_location"]),
+        pano_location=pano_location,
+        camera_location=camera_location,
         pano_rt=np.array(pano_data["camera_rt_matrix"]),
         camera_rt=np.array(camera_data["camera_rt_matrix"]),
         camera_k=np.array(camera_data["camera_k_matrix"]),
