@@ -3,14 +3,14 @@ defaults:
   - dataset: ob3d
   - _self_
 
-generation_iters: 1
-save_path: /mnt/d/outputs
+generation_iters: 2
+save_path: /mnt/d/outputs_1
 splits_path: /mnt/e/3D/experiments/splits
 generate: true
 # Удаление .ply файлов после генерации (файлы из dataset.restricted_data_path не удаляются)
-remove_generate: false
+remove_generate: true
 # Удаление файлов рендеринга камер из сгенерированных .ply файлов (файлы из dataset.restricted_data_path не удаляются)
-remove_renders: false
+remove_renders: true
 
 tensorboard:
   enabled: true

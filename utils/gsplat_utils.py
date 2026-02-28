@@ -249,6 +249,7 @@ def render_cubemap(
 
     results = {}
     depth_results = {}
+    view_names = []
 
     render_mode = "RGB+ED" if render_depth else "RGB"
 
@@ -283,12 +284,13 @@ def render_cubemap(
         output_path_pieces = output_path.split(".")
         view_name = output_path_pieces[0] + "_" + name + "." + output_path_pieces[-1]
         cv2.imwrite(view_name, img_bgr)
+        view_names.append(view_name)
         results[name] = img_bgr
 
     if render_depth:
         results["depth_faces"] = depth_results
 
-    return results
+    return results, view_names
 
 
 def _faces_to_pano(
@@ -333,7 +335,7 @@ def render_pano(
     swap_yz: bool = False,
 ):
     render_depth = output_depth_path is not None
-    result = render_cubemap(
+    result, view_names = render_cubemap(
         ply_path,
         center_pos,
         size,
@@ -349,7 +351,7 @@ def render_pano(
     if render_depth and "depth_faces" in result:
         _faces_to_pano(result["depth_faces"], output_depth_path, size, is_depth=True)
 
-    return 
+    return view_names
 
 
 def _Rz(deg: float) -> np.ndarray:

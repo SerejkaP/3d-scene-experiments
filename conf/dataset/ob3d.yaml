@@ -2,7 +2,7 @@ name: ob3d
 # path: "/mnt/d/datasets/OB3D"
 path: "/mnt/e/3D/experiments/test/ob3d"
 # Путь к .txt файлу, в котором лежит список панорам, для которых не должны удаляться данные
-restricted_data_path: null
+restricted_data_path: "/mnt/e/3D/experiments/test/ob3d/restricted_files.txt"
 pano_width: 1600
 pano_height: 800
 tile_size: 400

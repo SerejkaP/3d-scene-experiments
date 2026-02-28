@@ -1,7 +1,7 @@
 name: 2d3ds
-path: "/mnt/d/datasets/2D-3D-Semantics"
+path: "/mnt/e/3D/experiments/test/2d3ds"
 # Путь к .txt файлу, в котором лежит список панорам, для которых не должны удаляться данные
-restricted_data_path: null
+restricted_data_path: "/mnt/e/3D/experiments/test/2d3ds/restricted_files.txt"
 pano_width: 4096
 pano_height: 2048
 tile_size: 1080

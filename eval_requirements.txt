@@ -1,0 +1,81 @@
+# Requirements for evaluate.py (without worldgen)
+# Install PyTorch with CUDA support separately if needed:
+#   pip install torch==2.9.1 torchvision==0.24.1 --index-url https://download.pytorch.org/whl/cu128
+
+# Configuration
+hydra-core
+omegaconf
+
+# Core scientific
+numpy
+scipy
+tqdm
+
+# # PyTorch
+# torch==2.9.1
+# torchvision==0.24.1
+
+# Image processing
+pillow
+opencv-python
+scikit-image
+OpenEXR
+
+# 3D / Gaussian Splatting rendering
+gsplat #==1.5.3
+plyfile
+py360convert
+
+# Metrics
+lpips
+piq
+
+# python -m pip install "setuptools<82"
+# # or pick a known-good pin:
+# python -m pip install "setuptools==81.0.0"
+# # (your older 69.5.1 would also work)
+# python -m pip install --no-build-isolation \
+#   git+https://github.com/openai/CLIP.git@dcba3cb2e2827b402d2701e7e1c7d9fed8a20ef1
+
+clip @ git+https://github.com/openai/CLIP.git@dcba3cb2e2827b402d2701e7e1c7d9fed8a20ef1
+
+# TensorBoard logging
+tensorboard
+
+
+# Also...
+# ===
+
+# export TCNN_CUDA_ARCHITECTURES="70;80;90"
+# export TORCH_CUDA_ARCH_LIST="7.0"
+
+# python - <<'PY'
+# import torch
+# from torchvision.models import alexnet, AlexNet_Weights
+# m = alexnet(weights=AlexNet_Weights.IMAGENET1K_V1)
+# print("OK, downloaded")
+# PY
+
+
+# python - <<'PY'
+# import torch
+# from piq.feature_extractors import InceptionV3
+# # создаём модель (это уже инициирует загрузку весов)
+# model = InceptionV3(normalize_input=False).eval()
+# # делаем dummy input в диапазоне (-1, 1)
+# x = torch.randn(1, 3, 299, 299).clamp(-1, 1)
+# with torch.no_grad():
+#     _ = model(x)
+# print("OK: PIQ Inception weights downloaded and cached.")
+# PY
+
+# python - <<'PY'
+# import torch
+# from piq import brisque
+# # dummy input в диапазоне [0, 1], как требует BRISQUE
+# x = torch.rand(1, 3, 256, 256)
+# with torch.no_grad():
+#     _ = brisque(x)
+# print("OK: BRISQUE weights downloaded and cached.")
+# PY
+

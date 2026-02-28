@@ -3,11 +3,14 @@ import hydra
 from omegaconf import DictConfig
 from utils.tensorboard_logger import TensorBoardLogger
 from utils.splits import load_split, filter_2d3ds_panos
-from worldgen_utils import worldgen_generate
+
+# Тоже убрать для других моделей
+from utils.worldgen_utils import worldgen_generate
 
 
 def _limit_reached(counter, generation_iters):
     return generation_iters != -1 and counter >= generation_iters
+
 
 # Метод под замену на метод текущей модели
 def create_gs(model_name, pano_path, save_path):
@@ -15,6 +18,18 @@ def create_gs(model_name, pano_path, save_path):
         return worldgen_generate(pano_path, save_path)
     else:
         raise Exception("Undefined model name!")
+
+
+def generate_2d3ds_scene(
+    cfg, pano_rgb_path, ply_save_path, tb_logger: TensorBoardLogger, counter
+):
+    print(f"[2d3ds] Generate scene for {os.path.basename(pano_rgb_path)}")
+    generation_time = create_gs(cfg.model.name, pano_rgb_path, ply_save_path)
+    tb_logger.log_scalar(
+        "Performance/generation_time_seconds", generation_time, counter
+    )
+    print(f"Generation time: {generation_time}")
+    return generation_time
 
 
 def process_2d3ds(
@@ -49,18 +64,31 @@ def process_2d3ds(
             os.makedirs(area_save_path, exist_ok=True)
             ply_path = os.path.join(area_save_path, f"{scene_name}_render.ply")
 
-            print(f"[2d3ds] Generate scene for {pano_name}")
-            generation_time = create_gs(cfg.model.name, pano_rgb_path, ply_path)
-            tb_logger.log_scalar(
-                "Performance/generation_time_seconds", generation_time, counter
+            generation_time = generate_2d3ds_scene(
+                cfg=cfg,
+                pano_rgb_path=pano_rgb_path,
+                ply_save_path=ply_path,
+                tb_logger=tb_logger,
+                counter=counter,
             )
-            print(f"Generation time: {generation_time}")
             generation_times.append(generation_time)
             if remove_generate and pano_rgb_path not in restricted_data:
                 os.remove(ply_path)
             counter += 1
 
     return generation_times
+
+
+def generate_ob3d_scene(
+    cfg, room_name, pano_rgb_path, ply_save_path, tb_logger: TensorBoardLogger, counter
+):
+    print(f"[ob3d] Generate scene for {room_name}")
+    generation_time = create_gs(cfg.model.name, pano_rgb_path, ply_save_path)
+    tb_logger.log_scalar(
+        "Performance/generation_time_seconds", generation_time, counter
+    )
+    print(f"Generation time: {generation_time}")
+    return generation_time
 
 
 def process_ob3d(
@@ -108,12 +136,14 @@ def process_ob3d(
                 pano_rgb_path = os.path.join(images_path, f"{t_scene}_rgb.png")
                 ply_path = os.path.join(save_scene_path, f"{t_scene}_render.ply")
 
-                print(f"[ob3d] Generate scene for {scene}/{scene_type}/{t_scene}")
-                generation_time = create_gs(cfg.model.name, pano_rgb_path, ply_path)
-                tb_logger.log_scalar(
-                    "Performance/generation_time_seconds", generation_time, counter
+                generation_time = generate_ob3d_scene(
+                    cfg=cfg,
+                    room_name=f"{scene}/{scene_type}/{t_scene}",
+                    pano_rgb_path=pano_rgb_path,
+                    ply_save_path=ply_path,
+                    tb_logger=tb_logger,
+                    counter=counter,
                 )
-                print(f"Generation time: {generation_time}")
                 generation_times.append(generation_time)
                 if remove_generate and pano_rgb_path not in restricted_data:
                     os.remove(ply_path)

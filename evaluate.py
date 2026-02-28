@@ -4,6 +4,7 @@ import hydra
 from omegaconf import DictConfig
 import numpy as np
 from tqdm import tqdm
+from generate import generate_2d3ds_scene, generate_ob3d_scene
 from utils.gsplat_utils import (
     compute_scene_radius,
     render_camera,
@@ -112,6 +113,7 @@ def evaluate_2d3ds(
 
     all_scene_metrics = []
     all_scene_depth_metrics = []
+    dataset_times = []
 
     counter = 0
     for area in areas:
@@ -130,14 +132,29 @@ def evaluate_2d3ds(
         if len(pano_img_list) == 0:
             continue
 
+        area_save_path = os.path.join(save_path, area)
+        if cfg.generate:
+            os.makedirs(area_save_path, exist_ok=True)
+
         for current_pano_rgb_name in pano_img_list:
             if _limit_reached(counter, cfg.generation_iters):
                 break
 
             scene_name = os.path.splitext(current_pano_rgb_name)[0]
             current_pano_rgb_path = os.path.join(pano_images, current_pano_rgb_name)
-            area_save_path = os.path.join(save_path, area)
             ply_render_path = os.path.join(area_save_path, f"{scene_name}_render.ply")
+
+            # Список файлов, которые будут удалены в конце сбора метрик для сцены
+            files_to_remove = []
+            is_restricted_file = current_pano_rgb_path.lower().strip() in restricted_data
+
+            if cfg.generate:
+                generation_time = generate_2d3ds_scene(
+                    cfg, current_pano_rgb_path, ply_render_path, tb_logger, counter
+                )
+                dataset_times.append(generation_time)
+                if cfg.remove_generate and not is_restricted_file:
+                    files_to_remove.append(ply_render_path)
 
             if not os.path.exists(ply_render_path):
                 print(f"[2d3ds] PLY not found, skipping: {ply_render_path}")
@@ -152,9 +169,6 @@ def evaluate_2d3ds(
             rendered_pano_depth_path = os.path.join(
                 area_save_path, f"{scene_name}_depth.exr"
             )
-            # Список файлов, которые будут удалены в конце сбора метрик для сцены
-            files_to_remove = []
-            is_restricted_file = current_pano_rgb_path in restricted_data
 
             # Если необходимо удалять рендеры и сцена не в списке неудаляемых, то удалить рендеры
             if cfg.remove_renders and not is_restricted_file:
@@ -165,7 +179,7 @@ def evaluate_2d3ds(
 
             # Панорамы рендерятся для визуального сравнения
             # Рендер панорамы сгенерированной сцены
-            render_pano(
+            view_names = render_pano(
                 ply_render_path,
                 [0, 0, 0],
                 cfg.dataset.pano_width,
@@ -173,6 +187,8 @@ def evaluate_2d3ds(
                 rendered_pano_depth_path,
                 swap_yz=swap_yz,
             )
+            if cfg.remove_renders and not is_restricted_file:
+                files_to_remove.extend(view_names)
 
             # Возможно, стоит убрать. Логирование картинки панорамы
             metrics_computer.log_image_comparison(
@@ -347,6 +363,7 @@ def evaluate_2d3ds(
         all_scene_metrics=all_scene_metrics,
         all_scene_depth_metrics=all_scene_depth_metrics,
         tb_logger=tb_logger,
+        dataset_times=dataset_times,
     )
 
 
@@ -400,6 +417,7 @@ def evaluate_ob3d(
 
     dataset_path = str(cfg.dataset.path)
     counter = 0
+    dataset_times = []
     for scene in avail_scenes:
         if _limit_reached(counter, cfg.generation_iters):
             break
@@ -424,12 +442,34 @@ def evaluate_ob3d(
                 test_data = [int(line.strip()) for line in f.readlines()]
 
             save_scene_path = os.path.join(save_path, scene, scene_type)
+            if cfg.generate:
+                os.makedirs(save_scene_path, exist_ok=True)
 
             for t in test_data:
                 if _limit_reached(counter, cfg.generation_iters):
                     break
                 t_scene = f"{str(t).zfill(5)}"
                 ply_render_path = os.path.join(save_scene_path, f"{t_scene}_render.ply")
+
+                pano_rgb_path = os.path.join(images_path, f"{t_scene}_rgb.png")
+                room_name = f"{scene}/{scene_type}/{t_scene}"
+
+                # Список файлов, которые будут удалены в конце сбора метрик для сцены
+                files_to_remove = []
+                is_restricted_file = pano_rgb_path.lower().strip() in restricted_data
+
+                if cfg.generate:
+                    generation_time = generate_ob3d_scene(
+                        cfg=cfg,
+                        room_name=room_name,
+                        pano_rgb_path=pano_rgb_path,
+                        ply_save_path=ply_render_path,
+                        tb_logger=tb_logger,
+                        counter=counter,
+                    )
+                    dataset_times.append(generation_time)
+                    if cfg.remove_generate and not is_restricted_file:
+                        files_to_remove.append(ply_render_path)
 
                 if not os.path.exists(ply_render_path):
                     print(f"[ob3d] PLY not found, skipping: {ply_render_path}")
@@ -441,12 +481,7 @@ def evaluate_ob3d(
                 rendered_pano_depth_path = os.path.join(
                     save_scene_path, f"{t_scene}_render_depth.exr"
                 )
-                pano_rgb_path = os.path.join(images_path, f"{t_scene}_rgb.png")
-                room_name = f"{scene}/{scene_type}/{t_scene}"
 
-                # Список файлов, которые будут удалены в конце сбора метрик для сцены
-                files_to_remove = []
-                is_restricted_file = pano_rgb_path in restricted_data
                 # Если необходимо удалять рендеры и сцена не в списке неудаляемых, то удалить рендеры
                 if cfg.remove_renders and not is_restricted_file:
                     files_to_remove.append(rendered_pano_path)
@@ -455,7 +490,7 @@ def evaluate_ob3d(
                 print(f"[ob3d] Evaluate scene for {room_name}")
 
                 # Рендеринг панорамы для визуального сравнения с GT-панорамой
-                render_pano(
+                view_names = render_pano(
                     ply_render_path,
                     [0, 0, 0],
                     cfg.dataset.pano_width,
@@ -463,6 +498,8 @@ def evaluate_ob3d(
                     rendered_pano_depth_path,
                     swap_yz=swap_yz,
                 )
+                if cfg.remove_renders and not is_restricted_file:
+                    files_to_remove.extend(view_names)
 
                 # Возможно, стоит убрать. Логирование картинки панорамы
                 metrics_computer.log_image_comparison(
@@ -743,6 +780,7 @@ def evaluate_ob3d(
         all_scene_metrics=all_scene_metrics,
         all_scene_depth_metrics=all_scene_depth_metrics,
         tb_logger=tb_logger,
+        dataset_times=dataset_times,
     )
 
 
@@ -750,6 +788,7 @@ def _finalize_dataset_averages(
     dataset_name: str,
     all_scene_metrics: list,
     all_scene_depth_metrics: list,
+    dataset_times: list,
     tb_logger: TensorBoardLogger,
 ) -> dict:
     """Compute, print, and TensorBoard-log dataset-level averages. Return them."""
@@ -775,6 +814,14 @@ def _finalize_dataset_averages(
         )
         result["scene_depth"] = avg_scene_depth
 
+    if dataset_times:
+        avg = sum(dataset_times) / len(dataset_times)
+        print(
+            f"\n[{dataset_name}] Average generation time: {avg:.2f}s ({len(dataset_times)} scenes)"
+        )
+        tb_logger.log_scalar(f"Performance/{dataset_name}/avg_generation_time", avg, 0)
+        result["generation_time"] = avg
+
     return result
 
 
@@ -793,6 +840,8 @@ def evaluate(cfg: DictConfig):
     print(f"{'='*60}\n")
 
     save_path = os.path.join(cfg.save_path, cfg.model.name, dataset_name)
+    if cfg.generate:
+        os.makedirs(save_path, exist_ok=True)
 
     if not os.path.isdir(save_path):
         raise Exception(f"Output directory not found!")
@@ -800,9 +849,9 @@ def evaluate(cfg: DictConfig):
     swap_yz = bool(cfg.model.get("swap_yz", False))
 
     restricted_data = []
-    if cfg.dataset.restricted_data_path:
+    if cfg.dataset.restricted_data_path and os.path.exists(cfg.dataset.restricted_data_path):
         with open(str(cfg.dataset.restricted_data_path), "r") as _rf:
-            restricted_data = _rf.readlines()
+            restricted_data = [line.lower().strip() for line in _rf.readlines()]
 
     if dataset_name == "2d3ds":
         evaluate_2d3ds(cfg, save_path, tb_logger, swap_yz, restricted_data)
