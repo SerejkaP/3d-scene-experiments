@@ -146,7 +146,9 @@ def evaluate_2d3ds(
 
             # Список файлов, которые будут удалены в конце сбора метрик для сцены
             files_to_remove = []
-            is_restricted_file = current_pano_rgb_path.lower().strip() in restricted_data
+            is_restricted_file = (
+                current_pano_rgb_path.lower().strip() in restricted_data
+            )
 
             if cfg.generate:
                 generation_time = generate_2d3ds_scene(
@@ -404,13 +406,14 @@ def evaluate_ob3d(
 
     all_scene_metrics = []
     all_scene_depth_metrics = []
+    all_scale_logs = []
 
     # Только indoor сцены
     avail_scenes = [
         "archiviz-flat",
         "barbershop",
         "classroom",
-        "restroom",
+        # "restroom",
         "san-miguel",
         "sun-temple",
     ]
@@ -557,10 +560,11 @@ def evaluate_ob3d(
                     }
 
                     # Авто-масштабирование center_pos под координатное пространство GS-сцены.
-                    # Необходимо для моделей вроде DreamScene360 (swap_yz=True), у которых GS
-                    # генерируется в нормализованном масштабе, а позиции датасета — в метрах.
+                    # GS-сцена генерируется из одной панорамы и покрывает ограниченный радиус,
+                    # тогда как камеры датасета могут находиться в метрах от источника.
+                    # Масштабируем так, чтобы самая дальняя камера оказалась на границе сцены.
                     center_pos_scale = 1.0
-                    if swap_yz and os.path.exists(ply_render_path):
+                    if os.path.exists(ply_render_path):
                         # Вычисляем радиус сцены как 90-й перцентиль расстояний гауссиан от начала координат
                         scene_radius = compute_scene_radius(ply_render_path)
                         # Пре-пасс: находим максимальное расстояние между панорамами в GS-фрейме
@@ -601,6 +605,13 @@ def evaluate_ob3d(
                                 f"max_world_dist={_max_world_dist:.3f}, "
                                 f"center_pos_scale={center_pos_scale:.4f}"
                             )
+                        log_scale = float(abs(np.log(center_pos_scale)))
+                        tb_logger.log_scalar(
+                            f"Metrics/Scene/log_center_pos_scale/{room_name}",
+                            log_scale,
+                            counter,
+                        )
+                        all_scale_logs.append(log_scale)
 
                     for cam_idx, cam_json_name in enumerate(tqdm(cam_jsons)):
                         # Имя файла без расширения используется как идентификатор кадра
@@ -655,12 +666,14 @@ def evaluate_ob3d(
                         if len(_parts) == 2 and _parts[1] in _FACE_TO_CUBE_KEY:
                             center_pos_by_pano.setdefault(_parts[0], center_pos)
 
-                        # Пути для сохранения рендера и карты глубины
+                        # Пути для сохранения рендера и карты глубины.
+                        # Префикс t_scene нужен, чтобы рендеры разных source-панорам
+                        # одной сцены не перезаписывали друг друга.
                         rendered_cam_path = os.path.join(
-                            save_scene_path, f"data_{stem}_render.png"
+                            save_scene_path, f"{t_scene}_data_{stem}_render.png"
                         )
                         rendered_depth_path = os.path.join(
-                            save_scene_path, f"data_{stem}_depth.exr"
+                            save_scene_path, f"{t_scene}_data_{stem}_depth.exr"
                         )
                         # Если необходимо удалять рендеры и сцена не в списке неудаляемых, то удалить рендеры
                         if cfg.remove_renders and not is_restricted_file:
@@ -775,6 +788,11 @@ def evaluate_ob3d(
 
                 counter += 1
 
+    if all_scale_logs:
+        avg_log_scale = sum(all_scale_logs) / len(all_scale_logs)
+        print(f"\n[ob3d] Average log(center_pos_scale): {avg_log_scale:.4f} ({len(all_scale_logs)} scenes)")
+        tb_logger.log_scalar("DatasetAvg/ob3d/log_center_pos_scale", avg_log_scale, 0)
+
     return _finalize_dataset_averages(
         dataset_name="ob3d",
         all_scene_metrics=all_scene_metrics,
@@ -849,7 +867,9 @@ def evaluate(cfg: DictConfig):
     swap_yz = bool(cfg.model.get("swap_yz", False))
 
     restricted_data = []
-    if cfg.dataset.restricted_data_path and os.path.exists(cfg.dataset.restricted_data_path):
+    if cfg.dataset.restricted_data_path and os.path.exists(
+        cfg.dataset.restricted_data_path
+    ):
         with open(str(cfg.dataset.restricted_data_path), "r") as _rf:
             restricted_data = [line.lower().strip() for line in _rf.readlines()]
 
