@@ -1,16 +1,16 @@
 defaults:
-  - model: worldgen
+  - model: dreamscene360
   - dataset: ob3d
   - _self_
 
-generation_iters: 2
+generation_iters: 1
 save_path: /mnt/d/outputs_1
 splits_path: /mnt/e/3D/experiments/splits
-generate: true
+generate: false
 # Удаление .ply файлов после генерации (файлы из dataset.restricted_data_path не удаляются)
-remove_generate: true
+remove_generate: false
 # Удаление файлов рендеринга камер из сгенерированных .ply файлов (файлы из dataset.restricted_data_path не удаляются)
-remove_renders: true
+remove_renders: false
 
 tensorboard:
   enabled: true

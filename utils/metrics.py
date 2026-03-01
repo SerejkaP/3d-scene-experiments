@@ -182,9 +182,12 @@ def compute_brisque(image_path: str):
     tensor = (
         torch.tensor(image, dtype=torch.float32).permute(2, 0, 1).unsqueeze(0) / 255.0
     )
-    with torch.no_grad():
-        score = piq.brisque(tensor, data_range=1.0, reduction="none")
-    return score.item()
+    try:
+        with torch.no_grad():
+            score = piq.brisque(tensor, data_range=1.0, reduction="none")
+        return score.item()
+    except AssertionError:
+        return float("nan")
 
 
 class DepthMetrics:
