@@ -790,7 +790,9 @@ def evaluate_ob3d(
 
     if all_scale_logs:
         avg_log_scale = sum(all_scale_logs) / len(all_scale_logs)
-        print(f"\n[ob3d] Average log(center_pos_scale): {avg_log_scale:.4f} ({len(all_scale_logs)} scenes)")
+        print(
+            f"\n[ob3d] Average log(center_pos_scale): {avg_log_scale:.4f} ({len(all_scale_logs)} scenes)"
+        )
         tb_logger.log_scalar("DatasetAvg/ob3d/log_center_pos_scale", avg_log_scale, 0)
 
     return _finalize_dataset_averages(
