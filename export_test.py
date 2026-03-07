@@ -144,6 +144,18 @@ def _export_cubemap_data(
     os.makedirs(out_dir, exist_ok=True)
 
     fov = 90.0  # кубмапа — 90° FOV на грань
+    focal = face_size / (2.0 * np.tan(np.radians(fov) / 2.0))
+    cx = cy = face_size / 2.0
+
+    # Предвычисляем карту поправочных коэффициентов radial→Z для грани:
+    # e2p возвращает радиальные расстояния (из Blender equirectangular GT),
+    # а render_virtual_camera хранит Z-глубину вдоль оптической оси.
+    # Поправка: Z = radial / sqrt(u*u + v*v + 1), u=(px-cx)/f, v=(py-cy)/f.
+    _py, _px = np.mgrid[0:face_size, 0:face_size]
+    _u = (_px + 0.5 - cx) / focal
+    _v = (_py + 0.5 - cy) / focal
+    _radial_to_z = 1.0 / np.sqrt(_u * _u + _v * _v + 1.0)
+
     for face_name, yaw, pitch in _CUBEMAP_FACES:
         # RGB
         face_rgb = py360convert.e2p(
@@ -160,7 +172,7 @@ def _export_cubemap_data(
             cv2.cvtColor(face_rgb.astype(np.uint8), cv2.COLOR_RGB2BGR),
         )
 
-        # Depth
+        # Depth: конвертируем радиальное расстояние из GT панорамы в Z-глубину
         if depth is not None:
             depth_3ch = np.stack([depth, depth, depth], axis=-1)
             face_depth = py360convert.e2p(
@@ -172,14 +184,13 @@ def _export_cubemap_data(
                 in_rot_deg=0,
                 mode="bilinear",
             )[:, :, 0]
+            face_depth = face_depth * _radial_to_z
             _save_exr_depth(
                 face_depth, os.path.join(out_dir, f"{prefix}_{face_name}_depth.exr")
             )
 
         # Camera JSON
         R = _yaw_pitch_to_R(yaw, pitch)
-        focal = face_size / (2.0 * np.tan(np.radians(fov) / 2.0))
-        cx = cy = face_size / 2.0
         cam_info = {
             "face": face_name,
             "fov_h": fov,

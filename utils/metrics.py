@@ -223,12 +223,22 @@ class DepthMetrics:
             & (pred_depth < self.max_depth)
         )
 
+        # Coverage: доля GT-пикселей в диапазоне [min_depth, max_depth], для которых
+        # pred также попал в этот диапазон (т.е. камера видит геометрию в нужном диапазоне)
+        gt_range_mask = mask & (gt_depth > self.min_depth) & (gt_depth < self.max_depth)
+        coverage = (
+            float(valid_mask.sum() / gt_range_mask.sum())
+            if gt_range_mask.any()
+            else 0.0
+        )
+
         if not valid_mask.any():
             return {
                 "rmse": float("nan"),
                 "abs_rel": float("nan"),
                 "sq_rel": float("nan"),
                 "rmse_log": float("nan"),
+                "coverage": coverage,
             }
 
         gt_valid = gt_depth[valid_mask]
@@ -248,4 +258,5 @@ class DepthMetrics:
             "abs_rel": float(abs_rel),
             "sq_rel": float(sq_rel),
             "rmse_log": float(rmse_log),
+            "coverage": coverage,
         }
