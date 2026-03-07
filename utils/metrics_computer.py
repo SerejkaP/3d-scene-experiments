@@ -105,6 +105,7 @@ class MetricsComputer:
         step: int,
         scene_name: str,
         gt_depth_scale: float = 1.0 / 1000.0,
+        pred_depth_scale: float = 1.0,
     ) -> Optional[Dict[str, float]]:
         """
         Compute panorama depth metrics (RMSE, AbsRel) with error handling.
@@ -115,9 +116,12 @@ class MetricsComputer:
             step: Global step for TensorBoard logging
             scene_name: Scene name for error messages
             gt_depth_scale: Scale factor for ground truth depth (default: 1.0/1000.0 for mm->m)
+            pred_depth_scale: Scale factor for predicted depth (divide rendered depth
+                by this value to bring it into the same units as GT).
 
         Returns:
-            Dictionary with {rmse, abs_rel} or None if computation fails
+            Dictionary with {rmse, abs_rel, coverage} and optionally
+            {raw_rmse, raw_abs_rel, raw_coverage} (before scaling) or None if computation fails
         """
         if not self.depth_metric:
             return None
@@ -132,24 +136,48 @@ class MetricsComputer:
                 ),
             )
 
-            # Compute depth metrics
-            depth_metrics = self.depth_metric.compute(gt_depth, render_depth)
+            result = {}
+
+            # Metrics before scaling (raw)
+            if pred_depth_scale != 1.0:
+                raw_metrics = self.depth_metric.compute(gt_depth, render_depth)
+                if not np.isnan(raw_metrics["rmse"]):
+                    result["raw_rmse"] = raw_metrics["rmse"]
+                    result["raw_abs_rel"] = raw_metrics["abs_rel"]
+                    self.tb_logger.log_scalar(
+                        "Metrics/Panorama/Depth_RMSE_raw", raw_metrics["rmse"], step
+                    )
+                    self.tb_logger.log_scalar(
+                        "Metrics/Panorama/Depth_AbsRel_raw", raw_metrics["abs_rel"], step
+                    )
+                    info(f"PANO Depth RMSE (raw): {raw_metrics['rmse']:.4f}")
+                    info(f"PANO Depth Abs Rel (raw): {raw_metrics['abs_rel']:.4f}")
+
+            # Metrics after scaling
+            scaled_depth = render_depth / pred_depth_scale if pred_depth_scale != 1.0 else render_depth
+            depth_metrics = self.depth_metric.compute(gt_depth, scaled_depth)
 
             if not np.isnan(depth_metrics["rmse"]):
                 rmse = depth_metrics["rmse"]
                 abs_rel = depth_metrics["abs_rel"]
+                coverage = depth_metrics["coverage"]
 
                 # Log to TensorBoard
                 self.tb_logger.log_scalar("Metrics/Panorama/Depth_RMSE", rmse, step)
                 self.tb_logger.log_scalar(
                     "Metrics/Panorama/Depth_AbsRel", abs_rel, step
                 )
+                self.tb_logger.log_scalar(
+                    "Metrics/Panorama/Depth_Coverage", coverage, step
+                )
 
                 # Print to console
                 info(f"PANO Depth RMSE: {rmse:.4f}")
                 info(f"PANO Depth Abs Rel: {abs_rel:.4f}")
+                info(f"PANO Depth Coverage: {coverage:.4f}")
 
-                return {"rmse": rmse, "abs_rel": abs_rel}
+                result.update({"rmse": rmse, "abs_rel": abs_rel, "coverage": coverage})
+                return result
 
         except Exception as e:
             print(
@@ -226,6 +254,7 @@ class MetricsComputer:
         gt_depth_path: str,
         rendered_depth_path: str,
         gt_depth_scale: float = 1.0 / 1000.0,
+        pred_depth_scale: float = 1.0,
     ) -> Optional[Dict[str, float]]:
         """
         Compute depth metrics for a perspective camera view.
@@ -234,9 +263,12 @@ class MetricsComputer:
             gt_depth_path: Path to ground truth depth map
             rendered_depth_path: Path to rendered depth map
             gt_depth_scale: Scale factor for ground truth depth
+            pred_depth_scale: Scale factor for predicted depth (divide rendered depth
+                by this value to bring it into the same units as GT). Equal to
+                center_pos_scale used when placing the camera in GS-scene space.
 
         Returns:
-            Dictionary with {rmse, abs_rel} or None if computation fails
+            Dictionary with {rmse, abs_rel, sq_rel, rmse_log} or None if computation fails
         """
         if not self.depth_metric:
             return None
@@ -250,13 +282,24 @@ class MetricsComputer:
                 ),
             )
 
-            depth_metrics = self.depth_metric.compute(gt_depth, render_depth)
+            result = {}
+
+            # Metrics before scaling (raw)
+            if pred_depth_scale != 1.0:
+                raw_metrics = self.depth_metric.compute(gt_depth, render_depth)
+                if not np.isnan(raw_metrics["rmse"]):
+                    result["raw_rmse"] = raw_metrics["rmse"]
+                    result["raw_abs_rel"] = raw_metrics["abs_rel"]
+
+            # Metrics after scaling
+            scaled_depth = render_depth / pred_depth_scale if pred_depth_scale != 1.0 else render_depth
+            depth_metrics = self.depth_metric.compute(gt_depth, scaled_depth)
 
             if not np.isnan(depth_metrics["rmse"]):
-                return {
-                    "rmse": depth_metrics["rmse"],
-                    "abs_rel": depth_metrics["abs_rel"],
-                }
+                result["rmse"] = depth_metrics["rmse"]
+                result["abs_rel"] = depth_metrics["abs_rel"]
+                result["coverage"] = depth_metrics["coverage"]
+                return result
         except Exception as e:
             print(f"Warning: Could not compute camera depth metrics: {e}")
 
@@ -269,7 +312,7 @@ class MetricsComputer:
         Log camera depth metrics to TensorBoard.
 
         Args:
-            depth_metrics: Dictionary with {rmse, abs_rel}
+            depth_metrics: Dictionary with {rmse, abs_rel, sq_rel, rmse_log}
             scene_name: Scene name for TensorBoard tag
             camera_idx: Camera index for TensorBoard step
         """
@@ -283,6 +326,22 @@ class MetricsComputer:
             depth_metrics["abs_rel"],
             camera_idx,
         )
+        self.tb_logger.log_scalar(
+            f"Metrics/Camera_{scene_name}/Depth_Coverage",
+            depth_metrics["coverage"],
+            camera_idx,
+        )
+        if "raw_rmse" in depth_metrics:
+            self.tb_logger.log_scalar(
+                f"Metrics/Camera_{scene_name}/Depth_RMSE_raw",
+                depth_metrics["raw_rmse"],
+                camera_idx,
+            )
+            self.tb_logger.log_scalar(
+                f"Metrics/Camera_{scene_name}/Depth_AbsRel_raw",
+                depth_metrics["raw_abs_rel"],
+                camera_idx,
+            )
 
     def aggregate_and_log_scene_metrics(
         self,

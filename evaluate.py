@@ -6,10 +6,10 @@ import numpy as np
 from tqdm import tqdm
 from generate import generate_2d3ds_scene, generate_ob3d_scene
 from utils.gsplat_utils import (
-    compute_scene_radius,
     render_camera,
     render_pano,
     render_virtual_camera,
+    load_depth,
 )
 from utils.dataset_2d3ds_utils import pose_json_by_image_path
 from utils.metrics import ClipDistanceMetric, LpipsMetric, FidMetric, DepthMetrics
@@ -19,7 +19,7 @@ from utils.splits import load_split, filter_2d3ds_panos
 
 # Keys present in camera/scene metric dicts
 _SCENE_KEYS = ("lpips", "clip_distance", "psnr", "ssim", "niqe", "brisque", "fid")
-_DEPTH_KEYS = ("rmse", "abs_rel")
+_DEPTH_KEYS = ("rmse", "abs_rel", "coverage", "raw_rmse", "raw_abs_rel")
 
 
 def _avg(metrics_list: list, keys: tuple) -> dict:
@@ -29,6 +29,55 @@ def _avg(metrics_list: list, keys: tuple) -> dict:
         vals = [m[k] for m in metrics_list if k in m and not np.isnan(float(m[k]))]
         result[k] = float(np.mean(vals)) if vals else float("nan")
     return result
+
+
+def _radial_to_z_map(H: int, W: int) -> np.ndarray:
+    """Per-pixel factor to convert equirectangular radial depth to cubemap face Z-depth.
+
+    Rendered panorama depth (from c2e stitching) stores Z-depth along each cubemap
+    face's optical axis. GT Blender panoramic depth stores radial distance from the
+    camera center. For a pixel at spherical coordinates (theta, phi), the dominant
+    cubemap face has Z = radial * max(|dx|, |dy|, |dz|), where d is the unit direction
+    vector. Returns an array of shape (H, W) with these conversion factors.
+    """
+    py_idx, px_idx = np.mgrid[0:H, 0:W]
+    theta = ((px_idx + 0.5) / W - 0.5) * (2 * np.pi)  # longitude: -π … π
+    phi = (0.5 - (py_idx + 0.5) / H) * np.pi  # latitude:  π/2 … -π/2
+    dx = np.cos(phi) * np.sin(theta)
+    dy = np.sin(phi)
+    dz = np.cos(phi) * np.cos(theta)
+    return np.maximum(np.maximum(np.abs(dx), np.abs(dy)), np.abs(dz))
+
+
+def _depth_scale_from_pano(
+    rendered_depth_path: str,
+    gt_depth_path: str,
+    gt_depth_scale: float = 1.0,
+    max_gt_depth: float = 1e8,
+    gt_is_radial: bool = True,
+) -> float:
+    """Estimate center_pos_scale as median(pred_Z) / median(gt_Z).
+
+    pred is Z-depth from rendered cubemap faces (stitched via c2e).
+    If gt_is_radial=True (Blender equirectangular camera), GT is converted from
+    radial distance to Z-depth using max(|dx|, |dy|, |dz|) per pixel so both match.
+    If gt_is_radial=False (e.g. 2d3ds: stitched from perspective cameras without
+    radial correction), GT is already Z-depth and no conversion is applied.
+    Returns 1.0 if computation fails or not enough valid pixels.
+    """
+    try:
+        pred = load_depth(rendered_depth_path, depth_scale=1.0)
+        gt_raw = load_depth(gt_depth_path, depth_scale=gt_depth_scale)
+        gt = gt_raw * _radial_to_z_map(*gt_raw.shape) if gt_is_radial else gt_raw
+        mask_pred = (pred > 0) & (pred < 1e8)
+        mask_gt = (gt > 0) & (gt < max_gt_depth)
+        if mask_pred.sum() < 1000 or mask_gt.sum() < 1000:
+            return 1.0
+        scale = float(np.median(pred[mask_pred]) / np.median(gt[mask_gt]))
+        return scale if np.isfinite(scale) and scale > 0 else 1.0
+    except Exception as e:
+        print(f"Warning: Could not compute depth-based scale: {e}")
+        return 1.0
 
 
 def _print_and_log_averages(
@@ -113,6 +162,7 @@ def evaluate_2d3ds(
 
     all_scene_metrics = []
     all_scene_depth_metrics = []
+    all_scale_logs = []
     dataset_times = []
 
     counter = 0
@@ -212,28 +262,31 @@ def evaluate_2d3ds(
             gt_paths_for_fid = []
             render_paths_for_fid = []
 
-            # Авто-масштабирование позиций камер под координатное пространство GS-сцены.
-            # Необходимо для DreamScene360 (swap_yz=True): GS генерируется в нормализованном
-            # масштабе, а позиции 2d3ds — в метрах. Масштаб = scene_radius / max_cam_offset.
+            # Авто-масштабирование: оцениваем center_pos_scale через отношение медиан глубин.
+            # median(rendered_pano_depth) / median(gt_pano_depth)
             center_pos_scale = 1.0
-            if swap_yz and os.path.exists(ply_render_path):
-                scene_radius = compute_scene_radius(ply_render_path)
-                with open(pano_json_path) as _f:
-                    _pano_loc = np.array(json.load(_f)["camera_location"])
-                _max_cam_dist = 0.0
-                for _cp in camera_poses:
-                    with open(os.path.join(data_pose, _cp)) as _f:
-                        _cam_loc = np.array(json.load(_f)["camera_location"])
-                    _max_cam_dist = max(
-                        _max_cam_dist, float(np.linalg.norm(_cam_loc - _pano_loc))
-                    )
-                if _max_cam_dist > 1e-6:
-                    center_pos_scale = scene_radius / _max_cam_dist
-                    print(
-                        f"  [auto-scale] scene_radius={scene_radius:.3f}, "
-                        f"max_cam_dist={_max_cam_dist:.3f}, "
-                        f"center_pos_scale={center_pos_scale:.4f}"
-                    )
+            gt_pano_depth_path = os.path.join(
+                os.path.dirname(pano_images),
+                "depth",
+                current_pano_rgb_name.replace("_rgb.png", "_depth.png"),
+            )
+            if os.path.exists(rendered_pano_depth_path) and os.path.exists(
+                gt_pano_depth_path
+            ):
+                center_pos_scale = _depth_scale_from_pano(
+                    rendered_depth_path=rendered_pano_depth_path,
+                    gt_depth_path=gt_pano_depth_path,
+                    gt_depth_scale=1.0 / 512.0,
+                    max_gt_depth=50.0,
+                )
+                print(f"  [depth-scale] center_pos_scale={center_pos_scale:.4f}")
+            log_scale = float(abs(np.log(center_pos_scale)))
+            tb_logger.log_scalar(
+                f"Metrics/Scene/log_center_pos_scale/{pano_name}",
+                log_scale,
+                counter,
+            )
+            all_scale_logs.append(log_scale)
 
             for camera_idx, camera_pose in enumerate(tqdm(camera_poses)):
                 camera_json_path = os.path.join(data_pose, camera_pose)
@@ -292,6 +345,7 @@ def evaluate_2d3ds(
                             gt_depth_path=gt_depth_path,
                             rendered_depth_path=rendered_camera_depth_path,
                             gt_depth_scale=1.0 / 512.0,
+                            pred_depth_scale=center_pos_scale,
                         )
                     )
                     if camera_depth_metrics:
@@ -333,12 +387,12 @@ def evaluate_2d3ds(
                 )
 
             if len(camera_depth_metrics_list) > 0:
-                scene_rmse = sum(m["rmse"] for m in camera_depth_metrics_list) / len(
-                    camera_depth_metrics_list
+                n = len(camera_depth_metrics_list)
+                scene_rmse = sum(m["rmse"] for m in camera_depth_metrics_list) / n
+                scene_abs_rel = sum(m["abs_rel"] for m in camera_depth_metrics_list) / n
+                scene_coverage = (
+                    sum(m["coverage"] for m in camera_depth_metrics_list) / n
                 )
-                scene_abs_rel = sum(
-                    m["abs_rel"] for m in camera_depth_metrics_list
-                ) / len(camera_depth_metrics_list)
 
                 tb_logger.log_scalar(
                     "Metrics/Scene/Depth_RMSE_mean", scene_rmse, counter
@@ -346,12 +400,39 @@ def evaluate_2d3ds(
                 tb_logger.log_scalar(
                     "Metrics/Scene/Depth_AbsRel_mean", scene_abs_rel, counter
                 )
+                tb_logger.log_scalar(
+                    "Metrics/Scene/Depth_Coverage_mean", scene_coverage, counter
+                )
 
                 print(f"Scene average Depth RMSE: {scene_rmse:.4f}")
                 print(f"Scene average Depth Abs Rel: {scene_abs_rel:.4f}")
-                all_scene_depth_metrics.append(
-                    {"rmse": scene_rmse, "abs_rel": scene_abs_rel}
-                )
+                print(f"Scene average Depth Coverage: {scene_coverage:.4f}")
+
+                scene_depth_entry = {
+                    "rmse": scene_rmse,
+                    "abs_rel": scene_abs_rel,
+                    "coverage": scene_coverage,
+                }
+
+                raw_list = [m for m in camera_depth_metrics_list if "raw_rmse" in m]
+                if raw_list:
+                    nr = len(raw_list)
+                    scene_raw_rmse = sum(m["raw_rmse"] for m in raw_list) / nr
+                    scene_raw_abs_rel = sum(m["raw_abs_rel"] for m in raw_list) / nr
+                    tb_logger.log_scalar(
+                        "Metrics/Scene/Depth_RMSE_raw_mean", scene_raw_rmse, counter
+                    )
+                    tb_logger.log_scalar(
+                        "Metrics/Scene/Depth_AbsRel_raw_mean",
+                        scene_raw_abs_rel,
+                        counter,
+                    )
+                    print(f"Scene average Depth RMSE (raw): {scene_raw_rmse:.4f}")
+                    print(f"Scene average Depth Abs Rel (raw): {scene_raw_abs_rel:.4f}")
+                    scene_depth_entry["raw_rmse"] = scene_raw_rmse
+                    scene_depth_entry["raw_abs_rel"] = scene_raw_abs_rel
+
+                all_scene_depth_metrics.append(scene_depth_entry)
 
             for file_to_remove_path in files_to_remove:
                 # Удаление всех файлов, которые не помечены restricted
@@ -359,6 +440,13 @@ def evaluate_2d3ds(
 
             # Следующая сцена -> увеличить счетчик
             counter += 1
+
+    if all_scale_logs:
+        avg_log_scale = sum(all_scale_logs) / len(all_scale_logs)
+        print(
+            f"\n[2d3ds] Average log(center_pos_scale): {avg_log_scale:.4f} ({len(all_scale_logs)} scenes)"
+        )
+        tb_logger.log_scalar("DatasetAvg/2d3ds/log_center_pos_scale", avg_log_scale, 0)
 
     return _finalize_dataset_averages(
         dataset_name="2d3ds",
@@ -435,6 +523,11 @@ def evaluate_ob3d(
         ]:
             if _limit_reached(counter, cfg.generation_iters):
                 break
+
+            scene_metrics = []
+            scene_depth_metrics = []
+            scale_logs = []
+
             scene_path = os.path.join(dataset_path, scene, scene_type)
             images_path = os.path.join(scene_path, "images")
             test_file = os.path.join(scene_path, "test.txt")
@@ -559,59 +652,32 @@ def evaluate_ob3d(
                         "bottom": "D",
                     }
 
-                    # Авто-масштабирование center_pos под координатное пространство GS-сцены.
-                    # GS-сцена генерируется из одной панорамы и покрывает ограниченный радиус,
-                    # тогда как камеры датасета могут находиться в метрах от источника.
-                    # Масштабируем так, чтобы самая дальняя камера оказалась на границе сцены.
+                    # Авто-масштабирование: оцениваем center_pos_scale через отношение медиан глубин.
+                    # median(rendered_pano_depth) / median(gt_pano_depth)
                     center_pos_scale = 1.0
-                    if os.path.exists(ply_render_path):
-                        # Вычисляем радиус сцены как 90-й перцентиль расстояний гауссиан от начала координат
-                        scene_radius = compute_scene_radius(ply_render_path)
-                        # Пре-пасс: находим максимальное расстояние между панорамами в GS-фрейме
-                        _seen_pids: set = set()
-                        _max_world_dist = 0.0
-                        for _cj in cam_jsons:
-                            _st = _cj[:-5]
-                            _pp = _st.rsplit("_", 1)
-                            # Определяем pano_id из имени файла (убираем суффикс грани)
-                            _pid = (
-                                _pp[0]
-                                if len(_pp) == 2 and _pp[1] in _FACE_TO_CUBE_KEY
-                                else _st
-                            )
-                            # Пропускаем уже обработанные панорамы
-                            if _pid in _seen_pids:
-                                continue
-                            _seen_pids.add(_pid)
-                            _pc = os.path.join(cameras_dir, f"{_pid}_cam.json")
-                            if os.path.exists(_pc):
-                                with open(_pc) as _f:
-                                    _pd = json.load(_f)[0]
-                                _R = np.array(_pd["extrinsics"]["rotation"])
-                                _t = np.array(_pd["extrinsics"]["translation"])
-                                # Мировая позиция панорамы: p_world = -R^T @ t
-                                _wpos = -_R.T @ _t
-                                # Позиция в GS-фрейме (системе координат source-панорамы)
-                                _cp = R_w2c_cur @ _wpos + t_w2c_cur
-                                # Обновляем максимальное расстояние
-                                _max_world_dist = max(
-                                    _max_world_dist, float(np.linalg.norm(_cp))
-                                )
-                        if _max_world_dist > 1e-6:
-                            # Коэффициент масштаба: самая дальняя камера окажется на границе сцены
-                            center_pos_scale = scene_radius / _max_world_dist
-                            print(
-                                f"  [auto-scale] scene_radius={scene_radius:.3f}, "
-                                f"max_world_dist={_max_world_dist:.3f}, "
-                                f"center_pos_scale={center_pos_scale:.4f}"
-                            )
-                        log_scale = float(abs(np.log(center_pos_scale)))
-                        tb_logger.log_scalar(
-                            f"Metrics/Scene/log_center_pos_scale/{room_name}",
-                            log_scale,
-                            counter,
+                    gt_pano_depth_path = os.path.join(
+                        scene_path, "depths", f"{t_scene}_depth.exr"
+                    )
+                    if os.path.exists(rendered_pano_depth_path) and os.path.exists(
+                        gt_pano_depth_path
+                    ):
+                        center_pos_scale = _depth_scale_from_pano(
+                            rendered_depth_path=rendered_pano_depth_path,
+                            gt_depth_path=gt_pano_depth_path,
+                            gt_depth_scale=1.0,
+                            max_gt_depth=MAX_DEPTH_SCENE_DICT[scene],
                         )
-                        all_scale_logs.append(log_scale)
+                        print(
+                            f"  [depth-scale] center_pos_scale={center_pos_scale:.4f}"
+                        )
+                    log_scale = float(abs(np.log(center_pos_scale)))
+                    tb_logger.log_scalar(
+                        f"Metrics/Scene/log_center_pos_scale/{room_name}",
+                        log_scale,
+                        counter,
+                    )
+                    all_scale_logs.append(log_scale)
+                    scale_logs.append(log_scale)
 
                     for cam_idx, cam_json_name in enumerate(tqdm(cam_jsons)):
                         # Имя файла без расширения используется как идентификатор кадра
@@ -732,6 +798,7 @@ def evaluate_ob3d(
                                     gt_depth_path=gt_depth_path,
                                     rendered_depth_path=rendered_depth_path,
                                     gt_depth_scale=1.0,
+                                    pred_depth_scale=center_pos_scale,
                                 )
                             )
                             if camera_depth_metrics:
@@ -758,35 +825,92 @@ def evaluate_ob3d(
                         )
                         if scene_m:
                             # Убираем суффикс "_mean" из ключей для единообразия
-                            all_scene_metrics.append(
-                                {k.replace("_mean", ""): v for k, v in scene_m.items()}
-                            )
+                            metrics = {
+                                k.replace("_mean", ""): v for k, v in scene_m.items()
+                            }
+                            all_scene_metrics.append(metrics)
+                            scene_metrics.append(metrics)
 
                     # Усредняем метрики глубины по сцене и логируем
                     if camera_depth_metrics_list:
-                        scene_rmse = sum(
-                            m["rmse"] for m in camera_depth_metrics_list
-                        ) / len(camera_depth_metrics_list)
-                        scene_abs_rel = sum(
-                            m["abs_rel"] for m in camera_depth_metrics_list
-                        ) / len(camera_depth_metrics_list)
+                        n = len(camera_depth_metrics_list)
+                        scene_rmse = (
+                            sum(m["rmse"] for m in camera_depth_metrics_list) / n
+                        )
+                        scene_abs_rel = (
+                            sum(m["abs_rel"] for m in camera_depth_metrics_list) / n
+                        )
+                        scene_coverage = (
+                            sum(m["coverage"] for m in camera_depth_metrics_list) / n
+                        )
                         tb_logger.log_scalar(
                             "Metrics/Scene/Depth_RMSE_mean", scene_rmse, counter
                         )
                         tb_logger.log_scalar(
                             "Metrics/Scene/Depth_AbsRel_mean", scene_abs_rel, counter
                         )
+                        tb_logger.log_scalar(
+                            "Metrics/Scene/Depth_Coverage_mean", scene_coverage, counter
+                        )
                         print(f"Scene average Depth RMSE: {scene_rmse:.4f}")
                         print(f"Scene average Depth Abs Rel: {scene_abs_rel:.4f}")
-                        all_scene_depth_metrics.append(
-                            {"rmse": scene_rmse, "abs_rel": scene_abs_rel}
-                        )
+                        print(f"Scene average Depth Coverage: {scene_coverage:.4f}")
+
+                        scene_depth_entry = {
+                            "rmse": scene_rmse,
+                            "abs_rel": scene_abs_rel,
+                            "coverage": scene_coverage,
+                        }
+
+                        raw_list = [
+                            m for m in camera_depth_metrics_list if "raw_rmse" in m
+                        ]
+                        if raw_list:
+                            nr = len(raw_list)
+                            scene_raw_rmse = sum(m["raw_rmse"] for m in raw_list) / nr
+                            scene_raw_abs_rel = (
+                                sum(m["raw_abs_rel"] for m in raw_list) / nr
+                            )
+                            tb_logger.log_scalar(
+                                "Metrics/Scene/Depth_RMSE_raw_mean",
+                                scene_raw_rmse,
+                                counter,
+                            )
+                            tb_logger.log_scalar(
+                                "Metrics/Scene/Depth_AbsRel_raw_mean",
+                                scene_raw_abs_rel,
+                                counter,
+                            )
+                            print(
+                                f"Scene average Depth RMSE (raw): {scene_raw_rmse:.4f}"
+                            )
+                            print(
+                                f"Scene average Depth Abs Rel (raw): {scene_raw_abs_rel:.4f}"
+                            )
+                            scene_depth_entry["raw_rmse"] = scene_raw_rmse
+                            scene_depth_entry["raw_abs_rel"] = scene_raw_abs_rel
+
+                        all_scene_depth_metrics.append(scene_depth_entry)
+                        scene_depth_metrics.append(scene_depth_entry)
 
                 for file_to_remove_path in files_to_remove:
                     # Удаление всех файлов, которые не помечены restricted
                     os.remove(file_to_remove_path)
 
                 counter += 1
+
+            if scale_logs:
+                avg_scene_log_scale = sum(scale_logs) / len(scale_logs)
+                print(
+                    f"\n[ob3d/{scene}] Average log(center_pos_scale): {avg_scene_log_scale:.4f} ({len(scale_logs)} panoramas)"
+                )
+            _finalize_dataset_averages(
+                dataset_name=f"ob3d/{scene}",
+                all_scene_metrics=scene_metrics,
+                all_scene_depth_metrics=scene_depth_metrics,
+                tb_logger=tb_logger,
+                dataset_times=[],
+            )
 
     if all_scale_logs:
         avg_log_scale = sum(all_scale_logs) / len(all_scale_logs)
